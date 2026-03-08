@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: quantra-beast-backend
+    name: quantra-beast
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn backend:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
