@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: quantra-beast-backend
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn backend:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
