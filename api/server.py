@@ -299,11 +299,108 @@ def engine_flow(oc):
     sc=max(-100,min(100,sc))
     return {"name":"Flow","score":round(sc,1),"signal":"BULL" if sc>15 else "BEAR" if sc<-15 else "NEUTRAL","confidence":min(95,abs(sc)),"reasons":rs,"data":{"ce_add":ca,"pe_add":pa}}
 
-# ─── SIGNAL FUSION ────────────────────────────
-WEIGHTS={"trend":0.18,"options":0.20,"gamma":0.12,"volatility":0.10,"regime":0.08,"sentiment":0.15,"flow":0.17}
+# ─── NEWS IMPACT ENGINE ────────────────────────
+# Keywords that move markets with their directional impact (-100 to +100)
+NEWS_SIGNALS = {
+    # STRONG BULL
+    "rate cut":80,"repo cut":80,"rate reduce":80,"stimulus":70,"gdp growth":65,
+    "gdp beat":65,"inflation ease":60,"cpi lower":60,"surplus":55,"buyback":55,
+    "dividend":50,"upgrade":55,"record high":50,"all time high":50,"profit surge":55,
+    "earnings beat":55,"strong results":55,"acquisition":45,"ipo":40,"fdi":60,
+    "foreign inflow":65,"fii buy":70,"dii buy":55,"liquidity":50,"qe":65,
+    "rate pause":35,"hold rate":35,"dovish":55,"easing":50,
+    # STRONG BEAR
+    "rate hike":-80,"rate increase":-75,"hawkish":-65,"recession":-80,
+    "inflation surge":-65,"cpi high":-60,"deficit":-55,"downgrade":-60,
+    "war":-75,"conflict":-65,"sanctions":-60,"ban":-55,"tax hike":-55,
+    "loss":-50,"profit fall":-50,"earnings miss":-55,"revenue drop":-50,
+    "layoffs":-40,"bankruptcy":-70,"default":-75,"crisis":-70,"crash":-80,
+    "sell off":-65,"fii sell":-70,"outflow":-60,"slowdown":-55,
+    "geopolitical":-45,"tension":-45,"uncertainty":-40,"volatility":-30,
+    # NIFTY SPECIFIC
+    "nifty":-10,"sebi":0,"rbi":0,"budget":20,"policy":10,
+    "sensex":-10,"midcap":5,"smallcap":5,"expiry":0,
+}
+
+def analyze_news_impact(news_list):
+    """Analyze news items and return impact scores + highlighted news."""
+    impactful = []
+    total_score = 0
+    bull_news = []
+    bear_news = []
+    
+    for item in news_list:
+        title_lower = (item.get("title","") + " " + item.get("company","")).lower()
+        score = 0
+        matched_keywords = []
+        
+        for kw, val in NEWS_SIGNALS.items():
+            if kw in title_lower:
+                score += val
+                matched_keywords.append(kw)
+        
+        # Normalize to -100 / +100
+        score = max(-100, min(100, score))
+        
+        if abs(score) >= 20:  # Only show impactful news
+            impact_level = "HIGH" if abs(score) >= 60 else "MEDIUM" if abs(score) >= 30 else "LOW"
+            direction = "BULL" if score > 0 else "BEAR"
+            impactful.append({
+                **item,
+                "impact_score": round(score, 1),
+                "impact_level": impact_level,
+                "direction": direction,
+                "keywords": matched_keywords[:3],
+                "signal": f"+{score}" if score > 0 else str(score)
+            })
+            total_score += score
+            if score > 0: bull_news.append(item.get("title",""))
+            else: bear_news.append(item.get("title",""))
+    
+    # Sort by absolute impact
+    impactful.sort(key=lambda x: abs(x["impact_score"]), reverse=True)
+    
+    # Overall news sentiment score
+    n = len([i for i in news_list if True])
+    news_sentiment = round(total_score / max(1, len(impactful)), 1) if impactful else 0
+    
+    return {
+        "impactful_news": impactful[:10],
+        "news_sentiment_score": news_sentiment,
+        "bull_count": len([i for i in impactful if i["direction"]=="BULL"]),
+        "bear_count": len([i for i in impactful if i["direction"]=="BEAR"]),
+        "top_bull_news": bull_news[:2],
+        "top_bear_news": bear_news[:2],
+        "total_news_analyzed": len(news_list),
+    }
+
+def engine_news(news_analysis):
+    """8th signal input — News sentiment engine."""
+    ns = news_analysis.get("news_sentiment_score", 0)
+    bc = news_analysis.get("bull_count", 0)
+    rc = news_analysis.get("bear_count", 0)
+    sc = max(-100, min(100, ns))
+    rs = []
+    if bc > rc and abs(sc) > 20:
+        rs.append(f"{bc} bullish news items detected — positive macro flow")
+    elif rc > bc and abs(sc) > 20:
+        rs.append(f"{rc} bearish news items detected — negative macro pressure")
+    else:
+        rs.append(f"News sentiment neutral — {bc} bull, {rc} bear items")
+    imp = news_analysis.get("impactful_news",[])
+    if imp: rs.append(f"Top impact: {imp[0].get('title','')[:60]}...")
+    return {
+        "name":"News","score":round(sc,1),
+        "signal":"BULL" if sc>15 else "BEAR" if sc<-15 else "NEUTRAL",
+        "confidence":min(95,abs(sc)),"reasons":rs,
+        "data":{"sentiment":ns,"bull_news":bc,"bear_news":rc}
+    }
+
+WEIGHTS={"trend":0.16,"options":0.18,"gamma":0.11,"volatility":0.09,"regime":0.07,"sentiment":0.14,"flow":0.15,"news":0.10}
 
 def generate_signal(snapshot):
     idx=snapshot["indices"]; oc=snapshot["option_data"]; fii=snapshot["fii_dii"]
+    news_data=snapshot.get("news_analysis",{"news_sentiment_score":0,"bull_count":0,"bear_count":0,"impactful_news":[]})
     e={
         "trend":     engine_trend(idx,oc),
         "options":   engine_options(oc),
@@ -312,6 +409,7 @@ def generate_signal(snapshot):
         "regime":    engine_regime(idx,oc),
         "sentiment": engine_sentiment(fii),
         "flow":      engine_flow(oc),
+        "news":      engine_news(news_data),
     }
     composite=sum(e[k]["score"]*WEIGHTS.get(k,0) for k in e)
     mult=e["regime"]["data"].get("mult",1.0)
@@ -465,6 +563,10 @@ def self_ping():
 threading.Thread(target=self_ping,daemon=True).start()
 
 # ─── ROUTES ──────────────────────────────────
+@app.route("/")
+def root():
+    return jsonify({"status":"alive","version":"2.0","service":"QUANTRA BEAST","time":str(datetime.datetime.now())})
+
 @app.route("/ping")
 def ping():
     return jsonify({"status":"alive","version":"2.0","time":str(datetime.datetime.now())})
@@ -480,7 +582,15 @@ def gen_signal():
     ct=risk_mgr.can_trade()
     idx=fetch_indices(); oc=fetch_chain(sym); fii=fetch_fii()
     if "error" in oc: return jsonify({"error":f"Data fetch failed: {oc['error']}"}),503
-    snap={"symbol":sym,"indices":idx,"option_data":oc,"fii_dii":fii}
+    # Fetch and analyze news
+    news_raw=[]; news_analysis={"news_sentiment_score":0,"bull_count":0,"bear_count":0,"impactful_news":[]}
+    try:
+        nd=nse_get("https://www.nseindia.com/api/corporate-announcements?index=equities")
+        if nd and isinstance(nd,list):
+            news_raw=[{"title":x.get("subject",""),"company":x.get("symbol",""),"time":x.get("an_dt","")} for x in nd[:30]]
+        news_analysis=analyze_news_impact(news_raw)
+    except Exception as ne: print(f"[NEWS] {ne}")
+    snap={"symbol":sym,"indices":idx,"option_data":oc,"fii_dii":fii,"news_analysis":news_analysis}
     sig=generate_signal(snap); last_signal=sig
     pos=None
     if sig["action"]!="WAIT" and ct["allowed"]:
@@ -488,7 +598,8 @@ def gen_signal():
     return jsonify({"signal":sig,"position":pos,"capital":risk_mgr.status(),
                     "can_trade":ct,"indices":idx,"fii_dii":fii,
                     "chain":oc.get("chain",[]),
-                    "option_meta":{k:v for k,v in oc.items() if k!="chain"}})
+                    "option_meta":{k:v for k,v in oc.items() if k!="chain"},
+                    "news_analysis":news_analysis})
 
 @app.route("/trade/enter",methods=["POST"])
 def trade_enter():
@@ -571,6 +682,72 @@ def cap_reset():
 def history():
     trades,perf=get_history()
     return jsonify({"trades":trades,"performance":perf})
+
+@app.route("/gift-nifty")
+def gift_nifty():
+    c=_cget("gift")
+    if c: return jsonify(c)
+    # SGX/GIFT Nifty from NSE
+    d=nse_get("https://www.nseindia.com/api/marketStatus")
+    gift={}
+    if d:
+        for m in d.get("marketState",[]):
+            if "GIFT" in m.get("market","").upper() or "SGX" in m.get("market","").upper():
+                gift={"last":m.get("last",0),"change":m.get("change",0),"pChange":m.get("percentChange",0),"market":m.get("market","")}
+                break
+    # Fallback: try indices
+    if not gift:
+        idx=_cget("idx") or {}
+        nifty=idx.get("NIFTY 50",{})
+        spot=nifty.get("last",0)
+        gift={"last":spot,"change":nifty.get("change",0),"pChange":nifty.get("pChange",0),"market":"GIFT NIFTY (approx)","note":"Live GIFT data unavailable, showing NIFTY"}
+    _cset("gift",gift)
+    return jsonify(gift)
+
+@app.route("/market-news")
+def market_news():
+    c=_cget("news")
+    if c: return jsonify(c)
+    # NSE announcements + circulars as news proxy
+    news=[]
+    try:
+        d=nse_get("https://www.nseindia.com/api/corporate-announcements?index=equities")
+        if d and isinstance(d,list):
+            for item in d[:15]:
+                news.append({
+                    "title": item.get("subject","") or item.get("desc",""),
+                    "company": item.get("symbol",""),
+                    "time": item.get("an_dt","") or item.get("exchdisstime",""),
+                    "type": "CORP"
+                })
+    except: pass
+    # Market status as context
+    try:
+        ms=nse_get("https://www.nseindia.com/api/marketStatus")
+        if ms:
+            for m in ms.get("marketState",[]):
+                if m.get("marketStatus"):
+                    news.insert(0,{
+                        "title":f"{m.get('market','')} — {m.get('marketStatus','').upper()} | {m.get('tradeDate','')}",
+                        "company":"NSE","time":"","type":"MARKET"
+                    })
+    except: pass
+    if not news:
+        news=[{"title":"Market data loading — NSE announcements will appear here","company":"","time":"","type":"INFO"}]
+    _cset("news",news)
+    return jsonify({"news":news,"count":len(news),"fetched_at":datetime.datetime.now().isoformat()})
+
+@app.route("/market-status")
+def mkt_status():
+    now=datetime.datetime.now(); wd=now.weekday()
+    mo=now.replace(hour=9,minute=15,second=0,microsecond=0)
+    mc=now.replace(hour=15,minute=30,second=0,microsecond=0)
+    if wd>=5: s,sess="CLOSED","Weekend"
+    elif now<now.replace(hour=9,minute=0,second=0,microsecond=0): s,sess="CLOSED","Pre-Market"
+    elif now<mo: s,sess="PRE-OPEN","Pre-Open 9:00–9:15"
+    elif now<=mc: s,sess="OPEN",f"Live | {int((mc-now).total_seconds()//60)}m to close"
+    else: s,sess="CLOSED","After Market"
+    return jsonify({"status":s,"session":sess,"is_open":s=="OPEN","time":now.strftime("%H:%M:%S"),"date":now.strftime("%d %b %Y")})
 
 if __name__=="__main__":
     app.run(host="0.0.0.0",port=5000,debug=False)
