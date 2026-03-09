@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: quantra-beast
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn api.server:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    plan: free
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: SCRAPER_API_KEY
+        value: "620fb119d0569d21a4303effdd303228"
+      - key: RENDER_EXTERNAL_URL
+        value: "https://quantra-beast.onrender.com"
+      - key: DB_PATH
+        value: "/tmp/quantra.db"
