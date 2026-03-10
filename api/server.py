@@ -1,74 +1,55 @@
 """
-QUANTRA BEAST v3 — Production Server
-Zerodha Kite (PRIMARY) + Upstox (FALLBACK) Live Feed
-8 signal engines + dual-broker websocket LTP + capital management + DB
+QUANTRA BEAST v3.0 — Production Server
+Zerodha Kite Connect — PRIMARY & ONLY broker
+Live WebSocket streaming + REST LTP + Order Placement
+8 signal engines + capital management + DB
 """
-from flask import Flask, jsonify, request, redirect
+from flask import Flask, jsonify, request
 from flask_cors import CORS
-import requests, json, time, datetime, threading, os, uuid, sqlite3, hashlib
+import requests, json, time, datetime, threading, os, uuid, sqlite3, hashlib, struct, ssl
 
 app  = Flask(__name__)
 CORS(app)
 
-# ─── ENV CONFIG ──────────────────────────────────────────────────────────────
-SCRAPER_KEY   = os.environ.get("SCRAPER_API_KEY", "620fb119d0569d21a4303effdd303228")
-DB_PATH       = os.environ.get("DB_PATH", "/tmp/quantra.db")
-OWN_URL       = os.environ.get("RENDER_EXTERNAL_URL", "https://quantra-beast.onrender.com")
+# ─── ENV CONFIG ───────────────────────────────────────────────────────────────
+SCRAPER_KEY = os.environ.get("SCRAPER_API_KEY", "620fb119d0569d21a4303effdd303228")
+DB_PATH     = os.environ.get("DB_PATH", "/tmp/quantra.db")
+OWN_URL     = os.environ.get("RENDER_EXTERNAL_URL", "https://quantra-beast.onrender.com")
 
-# ─── ZERODHA KITE CREDENTIALS ────────────────────────────────────────────────
-KITE_API_KEY    = os.environ.get("KITE_API_KEY", "")         # set in Render env vars
-KITE_API_SECRET = os.environ.get("KITE_API_SECRET", "")      # set in Render env vars
+# ─── KITE CREDENTIALS ─────────────────────────────────────────────────────────
+KITE_API_KEY    = os.environ.get("KITE_API_KEY", "")
+KITE_API_SECRET = os.environ.get("KITE_API_SECRET", "")
 KITE_REDIRECT   = os.environ.get("KITE_REDIRECT", f"{OWN_URL}/kite/callback")
 
-# ─── UPSTOX CREDENTIALS (FALLBACK) ───────────────────────────────────────────
-UPSTOX_API_KEY    = os.environ.get("UPSTOX_API_KEY", "62061cdf-3269-4e07-a805-fa96b4fb99d6")
-UPSTOX_API_SECRET = os.environ.get("UPSTOX_API_SECRET", "odruq4i9jo")
-UPSTOX_REDIRECT   = os.environ.get("UPSTOX_REDIRECT", f"{OWN_URL}/upstox/callback")
-
 # ─── KITE STATE ───────────────────────────────────────────────────────────────
-kite_state = {
+kite = {
     "access_token":    os.environ.get("KITE_ACCESS_TOKEN", ""),
-    "request_token":   "",
     "connected":       False,
     "ws_connected":    False,
     "last_token_time": None,
-    "ltp_cache":       {},   # instrument_token (int) -> {ltp, ts}
-    "ltp_cache_sym":   {},   # symbol string      -> {ltp, ts}  (e.g. "NIFTY 50")
+    "ltp_cache":       {},      # instrument_token (int) -> {ltp, ts}
+    "ltp_sym":         {},      # "NSE:NIFTY 50"  -> {ltp, ts}
     "subscribed":      set(),
+    "ws_obj":          None,
     "error":           None,
+    "profile":         {},
 }
 
-# ─── UPSTOX STATE (FALLBACK) ──────────────────────────────────────────────────
-upstox_state = {
-    "access_token":    os.environ.get("UPSTOX_ACCESS_TOKEN", ""),
-    "connected":       False,
-    "last_token_time": None,
-    "ltp_cache":       {},
-    "ws_connected":    False,
-    "error":           None,
-}
-
-# ─── KITE INSTRUMENT TOKENS (NSE indices & common F&O) ───────────────────────
-# These are fixed Zerodha instrument tokens for indices
+# ─── KITE INSTRUMENT TOKENS (fixed by Zerodha) ───────────────────────────────
 KITE_INDEX_TOKENS = {
-    "NIFTY 50":        256265,
-    "NIFTY BANK":      260105,
-    "INDIA VIX":       264969,
+    "NIFTY 50":          256265,
+    "NIFTY BANK":        260105,
+    "INDIA VIX":         264969,
     "NIFTY FIN SERVICE": 257801,
-    "SENSEX":          265,
+    "SENSEX":            265,
 }
-KITE_INDEX_TOKEN_TO_NAME = {v: k for k, v in KITE_INDEX_TOKENS.items()}
+TOKEN_TO_NAME = {v: k for k, v in KITE_INDEX_TOKENS.items()}
 
-# Upstox instrument keys for indices (fallback)
-UPSTOX_KEYS = {
-    "NIFTY":     "NSE_INDEX|Nifty 50",
-    "BANKNIFTY": "NSE_INDEX|Nifty Bank",
-    "FINNIFTY":  "NSE_INDEX|Nifty Fin Service",
-    "INDIA VIX": "NSE_INDEX|India VIX",
-    "SENSEX":    "BSE_INDEX|SENSEX",
-}
+LOT_SIZES  = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65}
+MARGINS    = {"NIFTY": 6500, "BANKNIFTY": 11000, "FINNIFTY": 6000}
+SL_PCT     = 0.40
 
-# ─── CACHE ────────────────────────────────────────────────────────────────────
+# ─── SIMPLE CACHE ─────────────────────────────────────────────────────────────
 _cache = {}
 def _cget(k, ttl=60):
     e = _cache.get(k)
@@ -76,7 +57,7 @@ def _cget(k, ttl=60):
     return e["d"]
 def _cset(k, d): _cache[k] = {"ts": time.time(), "d": d}
 
-# ─── SCRAPER API (NSE OI data) ────────────────────────────────────────────────
+# ─── NSE SCRAPER (OI data only) ───────────────────────────────────────────────
 def nse_get(url, retries=3):
     for i in range(retries):
         try:
@@ -86,466 +67,315 @@ def nse_get(url, retries=3):
             }, timeout=30, headers={"Accept": "application/json"})
             t = r.text.strip()
             if t.startswith("<") or "<!doctype" in t.lower():
-                print(f"[NSE] HTML on attempt {i+1}"); time.sleep(2*(i+1)); continue
+                time.sleep(2*(i+1)); continue
             return r.json()
         except Exception as e:
             print(f"[NSE] Error {i+1}: {e}"); time.sleep(2)
     return None
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  ZERODHA KITE — AUTH
+#  KITE AUTH
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def kite_login_url():
-    """Generate Kite Connect OAuth login URL — user visits once daily"""
-    if not KITE_API_KEY:
-        return None
+    if not KITE_API_KEY: return None
     return f"https://kite.zerodha.com/connect/login?v=3&api_key={KITE_API_KEY}"
 
 def kite_exchange_token(request_token):
-    """Exchange request_token for access_token using checksum auth"""
     try:
         checksum = hashlib.sha256(
             f"{KITE_API_KEY}{request_token}{KITE_API_SECRET}".encode()
         ).hexdigest()
-        print(f"[KITE] Exchanging request_token, api_key={KITE_API_KEY[:8]}...")
+        print(f"[KITE] Exchanging request_token...")
         r = requests.post(
             "https://api.kite.trade/session/token",
-            data={
-                "api_key":       KITE_API_KEY,
-                "request_token": request_token,
-                "checksum":      checksum,
-            },
+            data={"api_key": KITE_API_KEY, "request_token": request_token, "checksum": checksum},
             headers={"X-Kite-Version": "3"},
             timeout=15
         )
-        print(f"[KITE] Token response: {r.status_code} — {r.text[:300]}")
+        print(f"[KITE] Token response: {r.status_code} {r.text[:300]}")
         d = r.json()
         if d.get("status") == "success":
             data = d.get("data", {})
-            token = data.get("access_token", "")
-            kite_state["access_token"]    = token
-            kite_state["request_token"]   = request_token
-            kite_state["connected"]        = True
-            kite_state["last_token_time"]  = datetime.datetime.now().isoformat()
-            kite_state["error"]            = None
-            print(f"[KITE] ✅ Token obtained: {token[:10]}...")
+            kite["access_token"]    = data.get("access_token", "")
+            kite["connected"]       = True
+            kite["last_token_time"] = datetime.datetime.now().isoformat()
+            kite["error"]           = None
+            kite["profile"]         = {
+                "user_name":  data.get("user_name", ""),
+                "user_id":    data.get("user_id", ""),
+                "email":      data.get("email", ""),
+                "broker":     data.get("broker", "ZERODHA"),
+                "login_time": data.get("login_time", ""),
+            }
+            print(f"[KITE] Logged in as {kite['profile'].get('user_name')}")
             threading.Thread(target=start_kite_ws, daemon=True).start()
-            return True, token
-        else:
-            err = d.get("message", str(d))
-            print(f"[KITE] ❌ Token exchange failed: {err}")
-            kite_state["error"] = err
-            return False, err
+            start_ltp_polling()
+            return True, kite["access_token"]
+        err = d.get("message", str(d))
+        kite["error"] = err
+        return False, err
     except Exception as e:
-        print(f"[KITE] ❌ Exception: {e}")
-        kite_state["error"] = str(e)
-        return False, str(e)
+        kite["error"] = str(e); return False, str(e)
 
-def kite_headers():
-    return {
-        "X-Kite-Version": "3",
-        "Authorization":  f"token {KITE_API_KEY}:{kite_state['access_token']}",
-    }
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  ZERODHA KITE — LIVE LTP (REST fallback when WS is not streaming yet)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def kite_get_ltp(instrument_tokens: list):
-    """
-    Fetch LTP via Kite REST API.
-    instrument_tokens: list of ints  e.g. [256265, 260105]
-    Returns dict: {token_int: {"ltp": float, "ts": float}}
-    """
-    if not kite_state["access_token"]:
-        return {}
+def kite_invalidate_token():
+    if not kite["access_token"]: return
     try:
-        params = [("i", f"NSE:{t}") if t not in [265] else ("i", f"BSE:{t}") for t in instrument_tokens]
-        # For index tokens use the exchange:tradingsymbol format
-        # Kite LTP endpoint accepts instrument token directly too
-        token_strs = "&".join(f"i={t}" for t in instrument_tokens)
-        r = requests.get(
-            f"https://api.kite.trade/quote/ltp?{token_strs}",
-            headers=kite_headers(), timeout=10
-        )
-        d = r.json()
-        result = {}
-        if d.get("status") == "success":
-            for key, val in d.get("data", {}).items():
-                # key is like "NSE:256265" or instrument_token
-                token = val.get("instrument_token")
-                ltp   = val.get("last_price", 0)
-                if token:
-                    result[token] = {"ltp": ltp, "ts": time.time()}
-                    kite_state["ltp_cache"][token] = result[token]
-        return result
-    except Exception as e:
-        print(f"[KITE LTP] Error: {e}")
-        return {}
+        requests.delete("https://api.kite.trade/session/token",
+            data={"api_key": KITE_API_KEY, "access_token": kite["access_token"]},
+            headers=_kh(), timeout=10)
+    except: pass
+    kite["access_token"] = ""; kite["connected"] = False
+    kite["ws_connected"] = False; kite["error"] = None
 
-def kite_get_quotes_by_symbol(exchange_symbols: list):
-    """
-    Fetch full OHLCV quote by exchange:symbol strings.
-    e.g. ["NSE:NIFTY 50", "NSE:NIFTY BANK"]
-    """
-    if not kite_state["access_token"]:
-        return {}
-    try:
-        token_strs = "&".join(f"i={s}" for s in exchange_symbols)
-        r = requests.get(
-            f"https://api.kite.trade/quote?{token_strs}",
-            headers=kite_headers(), timeout=10
-        )
-        d = r.json()
-        result = {}
-        if d.get("status") == "success":
-            for key, val in d.get("data", {}).items():
-                ohlc = val.get("ohlc", {})
-                ltp  = val.get("last_price", 0)
-                result[key] = {
-                    "ltp":   ltp,
-                    "open":  ohlc.get("open", 0),
-                    "high":  ohlc.get("high", 0),
-                    "low":   ohlc.get("low", 0),
-                    "close": ohlc.get("close", 0),
-                    "volume": val.get("volume", 0),
-                    "ts":    time.time()
-                }
-                # also cache by instrument_token
-                tok = val.get("instrument_token")
-                if tok:
-                    kite_state["ltp_cache"][tok] = {"ltp": ltp, "ts": time.time()}
-                kite_state["ltp_cache_sym"][key] = {"ltp": ltp, "ts": time.time()}
-        return result
-    except Exception as e:
-        print(f"[KITE QUOTES] Error: {e}")
-        return {}
-
-def kite_get_option_ltp(symbol, strike, option_type, expiry_str):
-    """
-    Fetch live LTP for a specific option via Kite REST.
-    symbol: NIFTY / BANKNIFTY / FINNIFTY
-    expiry_str: '13-Mar-2025'  (Kite format)
-    option_type: CE / PE
-    Returns float ltp
-    """
-    if not kite_state["access_token"]:
-        return 0
-    try:
-        # Build tradingsymbol: NIFTY25MAR22300CE
-        exp = datetime.datetime.strptime(expiry_str, "%d-%b-%Y")
-        ts  = f"{symbol}{exp.strftime('%y%b').upper()}{int(strike)}{option_type}"
-        r   = requests.get(
-            f"https://api.kite.trade/quote/ltp?i=NFO:{ts}",
-            headers=kite_headers(), timeout=10
-        )
-        d = r.json()
-        if d.get("status") == "success":
-            for key, val in d.get("data", {}).items():
-                return val.get("last_price", 0)
-    except Exception as e:
-        print(f"[KITE OPT LTP] {e}")
-    return 0
+def _kh():
+    return {"X-Kite-Version": "3",
+            "Authorization":  f"token {KITE_API_KEY}:{kite['access_token']}"}
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  ZERODHA KITE — WEBSOCKET STREAMING (KiteTicker protocol)
+#  KITE WEBSOCKET  (KiteTicker binary protocol)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _parse_kite_binary(data: bytes):
+    try:
+        if len(data) < 2: return
+        num = struct.unpack(">H", data[:2])[0]
+        offset = 2
+        for _ in range(num):
+            if offset + 2 > len(data): break
+            pkt_len = struct.unpack(">H", data[offset:offset+2])[0]
+            offset += 2
+            pkt = data[offset:offset+pkt_len]; offset += pkt_len
+            if len(pkt) < 8: continue
+            token = struct.unpack(">I", pkt[0:4])[0]
+            ltp   = struct.unpack(">I", pkt[4:8])[0] / 100.0
+            entry = {"ltp": ltp, "ts": time.time()}
+            kite["ltp_cache"][token] = entry
+            sym = TOKEN_TO_NAME.get(token)
+            if sym: kite["ltp_sym"][f"NSE:{sym}"] = entry
+    except Exception as e:
+        print(f"[KITE WS PARSE] {e}")
 
 def start_kite_ws():
-    """Start Kite WebSocket (KiteTicker) for live LTP streaming"""
-    if not kite_state["access_token"] or not KITE_API_KEY:
-        return
+    if not kite["access_token"] or not KITE_API_KEY: return
     try:
         import websocket as ws_lib
-        import struct, ssl
+        WS_URL = (f"wss://ws.kite.trade?api_key={KITE_API_KEY}"
+                  f"&access_token={kite['access_token']}")
+        ALL_TOKENS = list(KITE_INDEX_TOKENS.values())
 
-        WS_URL = f"wss://ws.kite.trade?api_key={KITE_API_KEY}&access_token={kite_state['access_token']}"
-
-        # Tokens to subscribe — all index tokens
-        DEFAULT_TOKENS = list(KITE_INDEX_TOKENS.values())
-
-        def _subscribe(ws, tokens):
-            msg = json.dumps({"a": "subscribe", "v": tokens})
-            ws.send(msg)
-            mode_msg = json.dumps({"a": "mode", "v": ["ltp", tokens]})
-            ws.send(mode_msg)
-            kite_state["subscribed"].update(tokens)
-            print(f"[KITE WS] Subscribed to {len(tokens)} tokens")
-
-        def _parse_binary(data):
-            """Parse Kite binary tick packet"""
-            try:
-                if len(data) < 2: return
-                num_packets = struct.unpack(">H", data[:2])[0]
-                offset = 2
-                for _ in range(num_packets):
-                    if offset + 2 > len(data): break
-                    pkt_len = struct.unpack(">H", data[offset:offset+2])[0]
-                    offset += 2
-                    pkt = data[offset:offset+pkt_len]
-                    offset += pkt_len
-                    if len(pkt) < 8: continue
-                    token = struct.unpack(">I", pkt[0:4])[0]
-                    ltp   = struct.unpack(">I", pkt[4:8])[0] / 100.0
-                    kite_state["ltp_cache"][token] = {"ltp": ltp, "ts": time.time()}
-                    sym = KITE_INDEX_TOKEN_TO_NAME.get(token)
-                    if sym:
-                        kite_state["ltp_cache_sym"][sym] = {"ltp": ltp, "ts": time.time()}
-            except Exception as e:
-                print(f"[KITE WS PARSE] {e}")
+        def _subscribe(ws):
+            ws.send(json.dumps({"a": "subscribe", "v": ALL_TOKENS}))
+            ws.send(json.dumps({"a": "mode",      "v": ["ltp", ALL_TOKENS]}))
+            kite["subscribed"].update(ALL_TOKENS)
+            print(f"[KITE WS] Subscribed {len(ALL_TOKENS)} index tokens")
 
         def on_open(ws):
-            kite_state["ws_connected"] = True
-            print("[KITE WS] ✅ Connected")
-            _subscribe(ws, DEFAULT_TOKENS)
+            kite["ws_connected"] = True; kite["ws_obj"] = ws
+            print("[KITE WS] Connected"); _subscribe(ws)
 
         def on_message(ws, message):
-            if isinstance(message, bytes):
-                _parse_binary(message)
+            if isinstance(message, bytes): _parse_kite_binary(message)
             else:
                 try:
                     d = json.loads(message)
                     if d.get("type") == "order":
-                        print(f"[KITE WS] Order update: {d}")
+                        print(f"[KITE ORDER UPDATE] {d.get('data',{})}")
                 except: pass
 
         def on_close(ws, *args):
-            kite_state["ws_connected"] = False
-            print("[KITE WS] Disconnected — retrying in 30s")
-            time.sleep(30)
-            if kite_state["access_token"]:
+            kite["ws_connected"] = False; kite["ws_obj"] = None
+            print("[KITE WS] Disconnected — retrying in 15s")
+            time.sleep(15)
+            if kite["access_token"]:
                 threading.Thread(target=start_kite_ws, daemon=True).start()
 
-        def on_error(ws, error):
-            print(f"[KITE WS] Error: {error}")
+        def on_error(ws, error): print(f"[KITE WS] Error: {error}")
 
-        ws_obj = ws_lib.WebSocketApp(
-            WS_URL,
-            on_open=on_open,
-            on_message=on_message,
-            on_close=on_close,
-            on_error=on_error,
-        )
-        ws_obj.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+        ws_lib.WebSocketApp(WS_URL,
+            on_open=on_open, on_message=on_message,
+            on_close=on_close, on_error=on_error
+        ).run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
 
     except Exception as e:
         print(f"[KITE WS] Start error: {e}")
 
-def kite_subscribe_option_tokens(tokens: list):
-    """Subscribe additional F&O tokens to existing WS — called when trade entered"""
-    # Best-effort: if WS running, send subscribe message
-    # Since we can't hold ws_obj reference easily, we cache and re-subscribe on next connect
-    kite_state["subscribed"].update(tokens)
+def kite_ws_subscribe(tokens: list):
+    new = [t for t in tokens if t not in kite["subscribed"]]
+    if not new: return
+    try:
+        ws = kite.get("ws_obj")
+        if ws:
+            ws.send(json.dumps({"a": "subscribe", "v": new}))
+            ws.send(json.dumps({"a": "mode",      "v": ["full", new]}))
+            kite["subscribed"].update(new)
+    except Exception as e:
+        print(f"[KITE WS SUBSCRIBE] {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  UPSTOX — AUTH & LTP (FALLBACK)
+#  KITE REST  — Quotes / LTP
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def upstox_login_url():
-    if not UPSTOX_API_KEY: return None
-    return (f"https://api.upstox.com/v2/login/authorization/dialog"
-            f"?response_type=code&client_id={UPSTOX_API_KEY}"
-            f"&redirect_uri={UPSTOX_REDIRECT}")
-
-def upstox_exchange_token(auth_code):
+def kite_quotes(exchange_symbols: list) -> dict:
+    if not kite["access_token"]: return {}
     try:
-        r = requests.post("https://api.upstox.com/v2/login/authorization/token", data={
-            "code": auth_code, "client_id": UPSTOX_API_KEY,
-            "client_secret": UPSTOX_API_SECRET, "redirect_uri": UPSTOX_REDIRECT,
-            "grant_type": "authorization_code"
-        }, headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}, timeout=15)
-        d = r.json()
-        if "access_token" in d:
-            upstox_state["access_token"]    = d["access_token"]
-            upstox_state["connected"]        = True
-            upstox_state["last_token_time"]  = datetime.datetime.now().isoformat()
-            upstox_state["error"]            = None
-            threading.Thread(target=start_upstox_ws, daemon=True).start()
-            return True, d["access_token"]
-        err = d.get("message", str(d))
-        upstox_state["error"] = err
-        return False, err
-    except Exception as e:
-        upstox_state["error"] = str(e)
-        return False, str(e)
-
-def upstox_headers():
-    return {"Authorization": f"Bearer {upstox_state['access_token']}", "Accept": "application/json"}
-
-def upstox_get_ltp(instrument_keys):
-    if not upstox_state["access_token"]: return {}
-    try:
-        r = requests.get("https://api.upstox.com/v2/market-quote/ltp",
-            params={"instrument_key": ",".join(instrument_keys)},
-            headers=upstox_headers(), timeout=10)
-        d = r.json(); result = {}
+        qs = "&".join(f"i={s}" for s in exchange_symbols)
+        r  = requests.get(f"https://api.kite.trade/quote?{qs}", headers=_kh(), timeout=10)
+        d  = r.json(); result = {}
         if d.get("status") == "success":
             for key, val in d.get("data", {}).items():
-                result[key] = {"ltp": val.get("last_price", 0), "ts": time.time()}
-                upstox_state["ltp_cache"][key] = result[key]
+                ohlc = val.get("ohlc", {}); ltp = val.get("last_price", 0)
+                result[key] = {"ltp": ltp, "open": ohlc.get("open",0), "high": ohlc.get("high",0),
+                               "low": ohlc.get("low",0), "close": ohlc.get("close",0),
+                               "volume": val.get("volume",0), "oi": val.get("oi",0), "ts": time.time()}
+                tok = val.get("instrument_token")
+                if tok: kite["ltp_cache"][tok] = {"ltp": ltp, "ts": time.time()}
+                kite["ltp_sym"][key] = {"ltp": ltp, "ts": time.time()}
         return result
     except Exception as e:
-        print(f"[UPSTOX LTP] {e}"); return {}
+        print(f"[KITE QUOTES] {e}"); return {}
 
-def upstox_get_quotes(instrument_keys):
-    if not upstox_state["access_token"]: return {}
+def kite_ltp_rest(exchange_symbols: list) -> dict:
+    if not kite["access_token"]: return {}
     try:
-        r = requests.get("https://api.upstox.com/v2/market-quote/quotes",
-            params={"instrument_key": ",".join(instrument_keys)},
-            headers=upstox_headers(), timeout=10)
-        d = r.json(); result = {}
+        qs = "&".join(f"i={s}" for s in exchange_symbols)
+        r  = requests.get(f"https://api.kite.trade/quote/ltp?{qs}", headers=_kh(), timeout=8)
+        d  = r.json(); result = {}
         if d.get("status") == "success":
             for key, val in d.get("data", {}).items():
-                ohlc = val.get("ohlc", {})
-                result[key] = {
-                    "ltp": val.get("last_price", 0), "open": ohlc.get("open", 0),
-                    "high": ohlc.get("high", 0), "low": ohlc.get("low", 0),
-                    "close": ohlc.get("close", 0), "volume": val.get("volume", 0),
-                    "ts": time.time()
-                }
-                upstox_state["ltp_cache"][key] = result[key]
+                ltp = val.get("last_price", 0)
+                result[key] = ltp
+                kite["ltp_sym"][key] = {"ltp": ltp, "ts": time.time()}
+                tok = val.get("instrument_token")
+                if tok: kite["ltp_cache"][tok] = {"ltp": ltp, "ts": time.time()}
         return result
     except Exception as e:
-        print(f"[UPSTOX QUOTES] {e}"); return {}
+        print(f"[KITE LTP] {e}"); return {}
 
-def upstox_key_for_option(symbol, strike, option_type, expiry_str):
+def _option_sym(symbol, strike, otype, expiry_str):
     try:
         exp = datetime.datetime.strptime(expiry_str, "%d-%b-%Y")
-        exp_code = exp.strftime("%y%b").upper()
-        return f"NSE_FO|{symbol}{exp_code}{strike}{option_type}"
+        return f"NFO:{symbol}{exp.strftime('%y%b').upper()}{int(strike)}{otype}"
     except: return None
 
-def start_upstox_ws():
-    if not upstox_state["access_token"]: return
-    try:
-        import websocket as ws_lib, ssl
-        def on_message(ws, message):
-            try:
-                data = json.loads(message) if isinstance(message, str) else {}
-                if isinstance(data, dict) and data.get("type") == "live_feed":
-                    for key, val in data.get("feeds", {}).items():
-                        if "ff" in val:
-                            ltp = val["ff"].get("marketFF", {}).get("ltpc", {}).get("ltp", 0)
-                            upstox_state["ltp_cache"][key] = {"ltp": ltp, "ts": time.time()}
-            except: pass
-        def on_open(ws):
-            upstox_state["ws_connected"] = True
-            print("[UPSTOX WS] Connected (fallback)")
-        def on_close(ws, *args):
-            upstox_state["ws_connected"] = False
-            time.sleep(30)
-            threading.Thread(target=start_upstox_ws, daemon=True).start()
-        def on_error(ws, error): print(f"[UPSTOX WS] {error}")
-        ws_url = "wss://api.upstox.com/v2/feed/market-data-feed/authorize?api_version=2"
-        r = requests.get(ws_url, headers=upstox_headers(), timeout=10)
-        ws_data = r.json()
-        authorized_url = ws_data.get("data", {}).get("authorizedRedirectUri", "")
-        if not authorized_url: return
-        ws_lib.WebSocketApp(authorized_url, on_open=on_open, on_message=on_message,
-            on_close=on_close, on_error=on_error).run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
-    except Exception as e:
-        print(f"[UPSTOX WS] {e}")
-
-# ═══════════════════════════════════════════════════════════════════════════════
-#  UNIFIED LTP RESOLVER — Kite first, Upstox fallback
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def active_broker():
-    """Returns 'kite' if Kite connected, 'upstox' if fallback connected, else None"""
-    if kite_state["connected"] and kite_state["access_token"]:
-        return "kite"
-    if upstox_state["connected"] and upstox_state["access_token"]:
-        return "upstox"
-    return None
-
 def get_index_ltp(name: str) -> float:
-    """
-    Get live LTP for an index by common name.
-    e.g. 'NIFTY 50', 'NIFTY BANK', 'INDIA VIX'
-    Kite WS cache → Kite REST → Upstox → 0
-    """
-    # 1. Try Kite WS cache (fastest, sub-second)
-    cached = kite_state["ltp_cache_sym"].get(name)
-    if cached and time.time() - cached["ts"] < 10:
-        return cached["ltp"]
-
-    token = KITE_INDEX_TOKENS.get(name)
-    if token:
-        cached = kite_state["ltp_cache"].get(token)
-        if cached and time.time() - cached["ts"] < 10:
-            return cached["ltp"]
-
-    # 2. Kite REST
-    if kite_state["access_token"]:
-        try:
-            sym_map = {
-                "NIFTY 50":          "NSE:NIFTY 50",
-                "NIFTY BANK":        "NSE:NIFTY BANK",
-                "INDIA VIX":         "NSE:INDIA VIX",
-                "NIFTY FIN SERVICE": "NSE:NIFTY FIN SERVICE",
-                "SENSEX":            "BSE:SENSEX",
-            }
-            ks = sym_map.get(name)
-            if ks:
-                q = kite_get_quotes_by_symbol([ks])
-                if ks in q:
-                    return q[ks]["ltp"]
-        except: pass
-
-    # 3. Upstox REST fallback
-    if upstox_state["access_token"]:
-        upx_map = {
-            "NIFTY 50":          "NSE_INDEX|Nifty 50",
-            "NIFTY BANK":        "NSE_INDEX|Nifty Bank",
-            "INDIA VIX":         "NSE_INDEX|India VIX",
-            "NIFTY FIN SERVICE": "NSE_INDEX|Nifty Fin Service",
-            "SENSEX":            "BSE_INDEX|SENSEX",
-        }
-        key = upx_map.get(name)
-        if key:
-            q = upstox_get_ltp([key])
-            if key in q:
-                return q[key]["ltp"]
+    key = f"NSE:{name}"
+    c = kite["ltp_sym"].get(key)
+    if c and time.time() - c["ts"] < 5: return c["ltp"]
+    tok = KITE_INDEX_TOKENS.get(name)
+    if tok:
+        c = kite["ltp_cache"].get(tok)
+        if c and time.time() - c["ts"] < 5: return c["ltp"]
+    if kite["access_token"]:
+        r = kite_ltp_rest([key])
+        return r.get(key, 0)
     return 0
 
-def get_option_ltp(symbol, strike, option_type, expiry_str) -> float:
-    """Get live option LTP — Kite first, Upstox fallback"""
-    # Kite REST
-    if kite_state["access_token"]:
-        ltp = kite_get_option_ltp(symbol, strike, option_type, expiry_str)
-        if ltp > 0:
-            return ltp
-
-    # Upstox fallback
-    if upstox_state["access_token"]:
-        key = upstox_key_for_option(symbol, strike, option_type, expiry_str)
-        if key:
-            q = upstox_get_ltp([key])
-            if key in q:
-                return q[key]["ltp"]
-    return 0
+def get_option_ltp(symbol, strike, otype, expiry_str) -> float:
+    if not kite["access_token"]: return 0
+    es = _option_sym(symbol, strike, otype, expiry_str)
+    if not es: return 0
+    r = kite_ltp_rest([es])
+    return r.get(es, 0)
 
 def fetch_live_ltp(symbol, strike_ce, strike_pe, expiry):
-    """Unified option + spot LTP fetch"""
-    # Map symbol name to index name
-    idx_name_map = {"NIFTY": "NIFTY 50", "BANKNIFTY": "NIFTY BANK", "FINNIFTY": "NIFTY FIN SERVICE"}
-    idx_name = idx_name_map.get(symbol, "NIFTY 50")
-    spot = get_index_ltp(idx_name)
-
+    idx_map = {"NIFTY": "NIFTY 50", "BANKNIFTY": "NIFTY BANK", "FINNIFTY": "NIFTY FIN SERVICE"}
+    spot   = get_index_ltp(idx_map.get(symbol, "NIFTY 50"))
     ce_ltp = get_option_ltp(symbol, strike_ce, "CE", expiry) if strike_ce else 0
     pe_ltp = get_option_ltp(symbol, strike_pe, "PE", expiry) if strike_pe else 0
-
-    broker = active_broker() or "none"
-    return {
-        "spot_ltp": spot,
-        "ce_ltp":   ce_ltp,
-        "pe_ltp":   pe_ltp,
-        "source":   f"{broker}_live"
-    }
+    src    = "kite_ws" if kite["ws_connected"] else "kite_rest"
+    return {"spot_ltp": spot, "ce_ltp": ce_ltp, "pe_ltp": pe_ltp, "source": src}
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  LTP POLLING THREAD (Kite REST poll every 5s — fallback when WS unavailable)
+#  KITE ORDER PLACEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def kite_place_order(params: dict) -> dict:
+    if not kite["access_token"]: return {"error": "Kite not connected"}
+    try:
+        variety = params.pop("variety", "regular")
+        r = requests.post(f"https://api.kite.trade/orders/{variety}",
+                          data=params, headers=_kh(), timeout=15)
+        d = r.json()
+        if d.get("status") == "success":
+            oid = d.get("data", {}).get("order_id", "")
+            print(f"[KITE ORDER] Placed {oid} {params.get('tradingsymbol')} {params.get('transaction_type')}")
+            return {"order_id": oid, "status": "success"}
+        err = d.get("message", str(d))
+        print(f"[KITE ORDER] Failed: {err}")
+        return {"error": err}
+    except Exception as e:
+        return {"error": str(e)}
+
+def kite_modify_order(order_id: str, params: dict) -> dict:
+    if not kite["access_token"]: return {"error": "Not connected"}
+    try:
+        variety = params.pop("variety", "regular")
+        r = requests.put(f"https://api.kite.trade/orders/{variety}/{order_id}",
+                         data=params, headers=_kh(), timeout=10)
+        d = r.json()
+        return {"order_id": order_id, "status": "success"} if d.get("status")=="success" else {"error": d.get("message")}
+    except Exception as e: return {"error": str(e)}
+
+def kite_cancel_order(order_id: str, variety="regular") -> dict:
+    if not kite["access_token"]: return {"error": "Not connected"}
+    try:
+        r = requests.delete(f"https://api.kite.trade/orders/{variety}/{order_id}",
+                            headers=_kh(), timeout=10)
+        d = r.json()
+        return {"status": "cancelled"} if d.get("status")=="success" else {"error": d.get("message")}
+    except Exception as e: return {"error": str(e)}
+
+def kite_get_orders() -> list:
+    if not kite["access_token"]: return []
+    try:
+        r = requests.get("https://api.kite.trade/orders", headers=_kh(), timeout=10)
+        d = r.json()
+        return d.get("data", []) if d.get("status")=="success" else []
+    except: return []
+
+def kite_get_positions() -> dict:
+    if not kite["access_token"]: return {}
+    try:
+        r = requests.get("https://api.kite.trade/portfolio/positions", headers=_kh(), timeout=10)
+        d = r.json()
+        return d.get("data", {}) if d.get("status")=="success" else {}
+    except: return {}
+
+def kite_get_margins() -> dict:
+    if not kite["access_token"]: return {}
+    try:
+        r = requests.get("https://api.kite.trade/user/margins", headers=_kh(), timeout=10)
+        d = r.json()
+        return d.get("data", {}) if d.get("status")=="success" else {}
+    except: return {}
+
+def build_order_params(pos: dict) -> list:
+    """Build Kite order dicts from position — returns list of order param dicts"""
+    action = pos.get("action", "BUY CE")
+    sym    = pos.get("symbol", "NIFTY")
+    exp    = pos.get("expiry", "")
+    lots   = pos.get("lots", 1)
+    qty    = lots * LOT_SIZES.get(sym, 75)
+    orders = []
+    if "CE" in action and pos.get("ce_strike"):
+        es = _option_sym(sym, pos["ce_strike"], "CE", exp)
+        if es:
+            orders.append({"tradingsymbol": es.replace("NFO:", ""), "exchange": "NFO",
+                           "transaction_type": "BUY", "order_type": "MARKET",
+                           "quantity": qty, "product": "MIS", "validity": "DAY",
+                           "variety": "regular", "tag": "QB_CE"})
+    if "PE" in action and pos.get("pe_strike"):
+        es = _option_sym(sym, pos["pe_strike"], "PE", exp)
+        if es:
+            orders.append({"tradingsymbol": es.replace("NFO:", ""), "exchange": "NFO",
+                           "transaction_type": "BUY", "order_type": "MARKET",
+                           "quantity": qty, "product": "MIS", "validity": "DAY",
+                           "variety": "regular", "tag": "QB_PE"})
+    return orders
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  LTP POLLING THREAD  (REST poll every 5s — supplements WS)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _ltp_poll_running = False
@@ -553,25 +383,20 @@ def start_ltp_polling():
     global _ltp_poll_running
     if _ltp_poll_running: return
     _ltp_poll_running = True
+    INDEX_SYMS = ["NSE:NIFTY 50", "NSE:NIFTY BANK", "NSE:INDIA VIX", "NSE:NIFTY FIN SERVICE"]
     def poll():
         while True:
             try:
-                broker = active_broker()
-                if broker and active_monitor:
-                    pos = active_monitor.get("trade", {})
-                    sym = pos.get("symbol", "NIFTY"); cs = pos.get("ce_strike"); ps = pos.get("pe_strike")
-                    exp = pos.get("expiry", "")
-                    if cs or ps:
-                        live = fetch_live_ltp(sym, cs, ps, exp)
+                if kite["access_token"]:
+                    kite_ltp_rest(INDEX_SYMS)
+                    if active_monitor:
+                        pos = active_monitor.get("trade", {})
+                        live = fetch_live_ltp(pos.get("symbol","NIFTY"),
+                                              pos.get("ce_strike"), pos.get("pe_strike"),
+                                              pos.get("expiry",""))
                         if live["ce_ltp"]   > 0: active_monitor["live_ce_ltp"]  = live["ce_ltp"]
                         if live["pe_ltp"]   > 0: active_monitor["live_pe_ltp"]  = live["pe_ltp"]
                         if live["spot_ltp"] > 0: active_monitor["live_spot"]    = live["spot_ltp"]
-
-                # Also refresh index LTP cache every cycle
-                if broker == "kite" and kite_state["access_token"]:
-                    syms = ["NSE:NIFTY 50", "NSE:NIFTY BANK", "NSE:INDIA VIX", "NSE:NIFTY FIN SERVICE"]
-                    kite_get_quotes_by_symbol(syms)
-
             except Exception as e:
                 print(f"[LTP POLL] {e}")
             time.sleep(5)
@@ -581,545 +406,436 @@ def start_ltp_polling():
 #  AUTO SIGNAL THREAD
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_auto_signal_running = False
 last_auto_signal_time = None
 
 def auto_signal_loop():
     global last_auto_signal_time
     while True:
         try:
-            now = datetime.datetime.now()
-            wd = now.weekday(); h, m = now.hour, now.minute
-            mins = h * 60 + m
-            market_open = (wd < 5) and (555 <= mins <= 930)
-            broker_ok = active_broker() is not None
-
-            if market_open and broker_ok and risk_mgr and not inTrade():
+            now  = datetime.datetime.now()
+            mins = now.hour * 60 + now.minute
+            if now.weekday() < 5 and 555 <= mins <= 930 and kite["connected"] and risk_mgr and not inTrade():
                 if not last_auto_signal_time or (time.time() - last_auto_signal_time) >= 180:
-                    print(f"[AUTO] Generating signal at {now.strftime('%H:%M')}")
+                    print(f"[AUTO] Signal at {now.strftime('%H:%M')}")
                     try:
                         _do_generate_signal(risk_mgr._last_cfg or {
                             "symbol": "NIFTY", "capital": risk_mgr.total,
                             "risk_pct": risk_mgr.risk_pct, "rr_ratio": risk_mgr.rr,
-                            "max_trades": risk_mgr.max_trades
-                        })
+                            "max_trades": risk_mgr.max_trades})
                         last_auto_signal_time = time.time()
-                    except Exception as e:
-                        print(f"[AUTO SIGNAL] {e}")
-        except Exception as e:
-            print(f"[AUTO LOOP] {e}")
+                    except Exception as e: print(f"[AUTO SIGNAL] {e}")
+        except Exception as e: print(f"[AUTO LOOP] {e}")
         time.sleep(30)
 
-def inTrade():
-    return active_monitor is not None
+def inTrade(): return active_monitor is not None
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  FETCH INDICES — Kite → Upstox → ScraperAPI
+#  FETCH INDICES
 # ═══════════════════════════════════════════════════════════════════════════════
+
+INDEX_EXCHANGE_SYMS = {
+    "NIFTY 50":          "NSE:NIFTY 50",
+    "NIFTY BANK":        "NSE:NIFTY BANK",
+    "INDIA VIX":         "NSE:INDIA VIX",
+    "NIFTY FIN SERVICE": "NSE:NIFTY FIN SERVICE",
+}
 
 def fetch_indices():
     c = _cget("idx")
     if c: return c
-
-    result = {}
-
-    # ── Kite (primary) ────────────────────────────────────────────────────────
-    if kite_state["access_token"]:
+    if kite["access_token"]:
         try:
-            sym_map = {
-                "NSE:NIFTY 50":          "NIFTY 50",
-                "NSE:NIFTY BANK":        "NIFTY BANK",
-                "NSE:INDIA VIX":         "INDIA VIX",
-                "NSE:NIFTY FIN SERVICE": "NIFTY FIN SERVICE",
-            }
-            q = kite_get_quotes_by_symbol(list(sym_map.keys()))
-            for ks, name in sym_map.items():
+            q = kite_quotes(list(INDEX_EXCHANGE_SYMS.values()))
+            result = {}
+            for name, ks in INDEX_EXCHANGE_SYMS.items():
                 if ks in q:
-                    v = q[ks]
-                    prev = v.get("close", v["ltp"])
-                    chg  = round(v["ltp"] - prev, 2) if prev else 0
-                    pchg = round(chg / prev * 100, 2) if prev else 0
-                    result[name] = {
-                        "last": v["ltp"], "open": v["open"], "high": v["high"],
-                        "low": v["low"], "previousClose": prev,
-                        "change": chg, "pChange": pchg, "source": "kite"
-                    }
-            if result:
-                _cset("idx", result); return result
-        except Exception as e:
-            print(f"[INDICES KITE] {e}")
-
-    # ── Upstox (fallback) ─────────────────────────────────────────────────────
-    if upstox_state["access_token"]:
-        try:
-            keys = list(UPSTOX_KEYS.values())
-            quotes = upstox_get_quotes(keys)
-            rev = {v: k for k, v in UPSTOX_KEYS.items()}
-            name_map = {"NIFTY": "NIFTY 50", "BANKNIFTY": "NIFTY BANK",
-                        "FINNIFTY": "NIFTY FIN SERVICE", "INDIA VIX": "INDIA VIX"}
-            for key, q in quotes.items():
-                sym = rev.get(key, "")
-                name = name_map.get(sym, sym)
-                prev = q.get("close", q["ltp"])
-                chg  = round(q["ltp"] - prev, 2) if prev else 0
-                pchg = round(chg / prev * 100, 2) if prev else 0
-                result[name] = {
-                    "last": q["ltp"], "open": q["open"], "high": q["high"],
-                    "low": q["low"], "previousClose": prev,
-                    "change": chg, "pChange": pchg, "source": "upstox"
-                }
-            if result:
-                _cset("idx", result); return result
-        except Exception as e:
-            print(f"[INDICES UPSTOX] {e}")
-
-    # ── ScraperAPI (last resort) ───────────────────────────────────────────────
+                    v = q[ks]; prev = v.get("close", v["ltp"])
+                    chg = round(v["ltp"]-prev, 2); pchg = round(chg/prev*100,2) if prev else 0
+                    result[name] = {"last": v["ltp"], "open": v["open"], "high": v["high"],
+                                    "low": v["low"], "previousClose": prev,
+                                    "change": chg, "pChange": pchg, "source": "kite"}
+            if result: _cset("idx", result); return result
+        except Exception as e: print(f"[INDICES] {e}")
+    # ScraperAPI fallback
     d = nse_get("https://www.nseindia.com/api/allIndices")
     if not d: return {"error": "failed"}
+    result = {}
     for item in d.get("data", []):
-        n = item.get("indexSymbol", "")
-        if n in {"NIFTY 50", "NIFTY BANK", "INDIA VIX", "NIFTY FIN SERVICE"}:
-            result[n] = {
-                "last": float(item.get("last", 0)), "open": float(item.get("open", 0)),
-                "high": float(item.get("high", 0)), "low": float(item.get("low", 0)),
-                "previousClose": float(item.get("previousClose", 0)),
-                "change": float(item.get("variation", 0)),
-                "pChange": float(item.get("percentChange", 0)), "source": "scraperapi"
-            }
-    _cset("idx", result)
-    return result
+        n = item.get("indexSymbol","")
+        if n in {"NIFTY 50","NIFTY BANK","INDIA VIX","NIFTY FIN SERVICE"}:
+            result[n] = {"last": float(item.get("last",0)), "open": float(item.get("open",0)),
+                         "high": float(item.get("high",0)), "low": float(item.get("low",0)),
+                         "previousClose": float(item.get("previousClose",0)),
+                         "change": float(item.get("variation",0)),
+                         "pChange": float(item.get("percentChange",0)), "source": "scraperapi"}
+    _cset("idx", result); return result
 
-# ─── FETCH OPTION CHAIN (NSE OI via ScraperAPI, LTP enriched via Kite/Upstox) ─
+# ─── FETCH OPTION CHAIN ───────────────────────────────────────────────────────
 def fetch_chain(symbol="NIFTY"):
     k = f"oc_{symbol}"; c = _cget(k)
     if c: return c
     raw = nse_get(f"https://www.nseindia.com/api/option-chain-indices?symbol={symbol}")
-    if not raw: return {"error": "failed", "chain": [], "spot": 0, "pcr": 1, "atm_strike": 0}
-    rec = raw.get("records", {}); spot = float(rec.get("underlyingValue", 0))
-    exp = rec.get("expiryDates", []); nearest = exp[0] if exp else None
-    step = 100 if symbol == "BANKNIFTY" else 50; atm = round(spot / step) * step
-    chain = []; tco = tcp = tcov = tcpv = 0
-    for item in rec.get("data", []):
+    if not raw: return {"error":"failed","chain":[],"spot":0,"pcr":1,"atm_strike":0}
+    rec = raw.get("records",{}); spot = float(rec.get("underlyingValue",0))
+    exp = rec.get("expiryDates",[]); nearest = exp[0] if exp else None
+    step = 100 if symbol=="BANKNIFTY" else 50; atm = round(spot/step)*step
+    chain = []; tco = tcp = 0
+    for item in rec.get("data",[]):
         if item.get("expiryDate") != nearest: continue
-        s = item.get("strikePrice", 0); ce = item.get("CE", {}); pe = item.get("PE", {})
-        coi = float(ce.get("openInterest", 0)); poi = float(pe.get("openInterest", 0))
-        cvol = float(ce.get("totalTradedVolume", 0)); pvol = float(pe.get("totalTradedVolume", 0))
-        tco += coi; tcp += poi; tcov += cvol; tcpv += pvol
-        chain.append({"strike": int(s), "distance": int(s - atm),
-            "ce_oi": int(coi), "ce_oi_change": int(ce.get("changeinOpenInterest", 0)),
-            "ce_ltp": float(ce.get("lastPrice", 0)), "ce_iv": float(ce.get("impliedVolatility", 0)),
-            "ce_volume": int(cvol),
-            "pe_oi": int(poi), "pe_oi_change": int(pe.get("changeinOpenInterest", 0)),
-            "pe_ltp": float(pe.get("lastPrice", 0)), "pe_iv": float(pe.get("impliedVolatility", 0)),
-            "pe_volume": int(pvol)})
+        s = item.get("strikePrice",0); ce = item.get("CE",{}); pe = item.get("PE",{})
+        coi = float(ce.get("openInterest",0)); poi = float(pe.get("openInterest",0))
+        tco += coi; tcp += poi
+        chain.append({"strike":int(s),"distance":int(s-atm),
+            "ce_oi":int(coi),"ce_oi_change":int(ce.get("changeinOpenInterest",0)),
+            "ce_ltp":float(ce.get("lastPrice",0)),"ce_iv":float(ce.get("impliedVolatility",0)),
+            "ce_volume":int(ce.get("totalTradedVolume",0)),
+            "pe_oi":int(poi),"pe_oi_change":int(pe.get("changeinOpenInterest",0)),
+            "pe_ltp":float(pe.get("lastPrice",0)),"pe_iv":float(pe.get("impliedVolatility",0)),
+            "pe_volume":int(pe.get("totalTradedVolume",0))})
     chain.sort(key=lambda x: x["strike"])
 
-    # ── Enrich ATM ±5 strikes with live LTP (Kite first, Upstox fallback) ─────
-    broker = active_broker()
-    if broker and nearest:
+    # Enrich ATM ±5 strikes with live Kite LTP
+    if kite["access_token"] and nearest:
         try:
-            nearby = [c for c in chain if abs(c["strike"] - atm) <= 5 * step]
-            enriched = 0
+            nearby = [row for row in chain if abs(row["strike"]-atm) <= 5*step]
+            syms = []
             for row in nearby:
-                ce_ltp = get_option_ltp(symbol, row["strike"], "CE", nearest)
-                pe_ltp = get_option_ltp(symbol, row["strike"], "PE", nearest)
-                if ce_ltp > 0: row["ce_ltp"] = ce_ltp; row["ce_source"] = broker
-                if pe_ltp > 0: row["pe_ltp"] = pe_ltp; row["pe_source"] = broker
-                enriched += 1
-            print(f"[CHAIN] Enriched {enriched} strikes via {broker}")
-        except Exception as e:
-            print(f"[CHAIN ENRICH] {e}")
+                cs = _option_sym(symbol, row["strike"], "CE", nearest)
+                ps = _option_sym(symbol, row["strike"], "PE", nearest)
+                if cs: syms.append(cs)
+                if ps: syms.append(ps)
+            if syms:
+                ltps = kite_ltp_rest(syms)
+                for row in nearby:
+                    cs = _option_sym(symbol, row["strike"], "CE", nearest)
+                    ps = _option_sym(symbol, row["strike"], "PE", nearest)
+                    if cs and ltps.get(cs,0) > 0: row["ce_ltp"] = ltps[cs]; row["ce_src"] = "kite"
+                    if ps and ltps.get(ps,0) > 0: row["pe_ltp"] = ltps[ps]; row["pe_src"] = "kite"
+        except Exception as e: print(f"[CHAIN ENRICH] {e}")
 
-    # Live spot from Kite/Upstox
-    live_spot = get_index_ltp("NIFTY 50" if symbol == "NIFTY" else
-                               "NIFTY BANK" if symbol == "BANKNIFTY" else
-                               "NIFTY FIN SERVICE")
-    if live_spot > 0:
-        spot = live_spot; atm = round(spot / step) * step
+    live_spot = get_index_ltp("NIFTY 50" if symbol=="NIFTY" else
+                               "NIFTY BANK" if symbol=="BANKNIFTY" else "NIFTY FIN SERVICE")
+    if live_spot > 0: spot = live_spot; atm = round(spot/step)*step
 
-    pcr = round(tcp / tco, 2) if tco > 0 else 1.0
-    high_oi_ce = sorted(chain, key=lambda x: x["ce_oi"], reverse=True)[:3]
-    high_oi_pe = sorted(chain, key=lambda x: x["pe_oi"], reverse=True)[:3]
-    res_strikes = [c for c in high_oi_ce if c["strike"] >= atm]
-    sup_strikes = [c for c in high_oi_pe if c["strike"] <= atm]
-
-    result = {
-        "spot": spot, "atm_strike": atm, "expiry": nearest,
-        "pcr": pcr, "max_pain": _calc_max_pain(chain), "chain": chain,
-        "total_ce_oi": int(tco), "total_pe_oi": int(tcp),
-        "resistance_strikes": res_strikes[:3], "support_strikes": sup_strikes[:3],
-        "iv_skew": _calc_iv_skew(chain, atm),
-        "data_source": f"nse_oi+{broker or 'scraperapi'}_ltp"
-    }
-    _cset(k, result)
-    return result
+    pcr = round(tcp/tco,2) if tco>0 else 1.0
+    res = sorted([c for c in chain if c["strike"]>=atm],  key=lambda x: x["ce_oi"], reverse=True)[:3]
+    sup = sorted([c for c in chain if c["strike"]<=atm],  key=lambda x: x["pe_oi"], reverse=True)[:3]
+    result = {"spot":spot,"atm_strike":atm,"expiry":nearest,"pcr":pcr,
+              "max_pain":_calc_max_pain(chain),"chain":chain,
+              "total_ce_oi":int(tco),"total_pe_oi":int(tcp),
+              "resistance_strikes":res,"support_strikes":sup,
+              "iv_skew":_calc_iv_skew(chain,atm),
+              "data_source":"nse_oi+kite_ltp" if kite["access_token"] else "scraperapi"}
+    _cset(k, result); return result
 
 def _calc_max_pain(chain):
-    best_strike = 0; min_pain = float("inf")
-    for target in chain:
-        pain = sum(max(0, c["strike"] - target["strike"]) * c["ce_oi"] +
-                   max(0, target["strike"] - c["strike"]) * c["pe_oi"] for c in chain)
-        if pain < min_pain: min_pain = pain; best_strike = target["strike"]
-    return best_strike
+    best=0; mp=float("inf")
+    for t in chain:
+        p = sum(max(0,c["strike"]-t["strike"])*c["ce_oi"]+max(0,t["strike"]-c["strike"])*c["pe_oi"] for c in chain)
+        if p<mp: mp=p; best=t["strike"]
+    return best
 
 def _calc_iv_skew(chain, atm):
-    atm_c = next((c for c in chain if c["strike"] == atm), None)
-    if not atm_c: return 0
-    return round(atm_c.get("pe_iv", 0) - atm_c.get("ce_iv", 0), 2)
+    a = next((c for c in chain if c["strike"]==atm), None)
+    return round(a.get("pe_iv",0)-a.get("ce_iv",0),2) if a else 0
 
-# ─── FETCH FII/DII ────────────────────────────────────────────────────────────
 def fetch_fii():
     c = _cget("fii")
     if c: return c
     d = nse_get("https://www.nseindia.com/api/fiidiiTradeReact")
-    result = {"fii_net": 0, "dii_net": 0, "source": "scraperapi"}
-    if d and isinstance(d, list):
+    r = {"fii_net":0,"dii_net":0}
+    if d and isinstance(d,list):
         for row in d:
-            cat = str(row.get("category", "")).upper()
+            cat = str(row.get("category","")).upper()
             try:
-                net = float(str(row.get("netPurchasesSales", "0")).replace(",", ""))
-                if "FII" in cat or "FPI" in cat: result["fii_net"] = net
-                elif "DII" in cat: result["dii_net"] = net
+                net = float(str(row.get("netPurchasesSales","0")).replace(",",""))
+                if "FII" in cat or "FPI" in cat: r["fii_net"] = net
+                elif "DII" in cat: r["dii_net"] = net
             except: pass
-    _cset("fii", result)
-    return result
+    _cset("fii",r); return r
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  SIGNAL ENGINES (8 total — unchanged logic)
+#  SIGNAL ENGINES (8 total)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def engine_trend(idx, oc):
-    n = idx.get("NIFTY 50", {}); sc = 0; rs = []
-    spot = oc.get("spot", 0); o = n.get("open", 0); h = n.get("high", 0); l = n.get("low", 0)
-    p = n.get("previousClose", 0); chg = n.get("pChange", 0)
-    if chg > 0.5:  sc += 25; rs.append(f"NIFTY up {chg:.2f}% — bullish momentum")
-    elif chg < -0.5: sc -= 25; rs.append(f"NIFTY down {chg:.2f}% — bearish momentum")
-    if p > 0:
-        rng = h - l
-        if rng > 0:
-            pos_in_range = (spot - l) / rng
-            if pos_in_range > 0.7:  sc += 15; rs.append("Spot in upper 30% of day's range")
-            elif pos_in_range < 0.3: sc -= 15; rs.append("Spot in lower 30% of day's range")
-    if o > 0:
-        gap_pct = (spot - p) / p * 100
-        if gap_pct > 0.3:   sc += 10; rs.append(f"Gap up {gap_pct:.2f}%")
-        elif gap_pct < -0.3: sc -= 10; rs.append(f"Gap down {gap_pct:.2f}%")
-        if spot > o:   sc += 10; rs.append("Spot above day open — bullish")
-        elif spot < o: sc -= 10; rs.append("Spot below day open — bearish")
-    sc = max(-100, min(100, sc))
-    return {"name": "Trend", "score": round(sc, 1), "signal": "BULL" if sc > 15 else "BEAR" if sc < -15 else "NEUTRAL",
-            "confidence": min(95, abs(sc)), "reasons": rs, "data": {"chg": chg, "spot": spot}}
+def engine_trend(idx,oc):
+    n=idx.get("NIFTY 50",{}); sc=0; rs=[]
+    spot=oc.get("spot",0); o=n.get("open",0); h=n.get("high",0); l=n.get("low",0)
+    p=n.get("previousClose",0); chg=n.get("pChange",0)
+    if chg>0.5:    sc+=25; rs.append(f"NIFTY up {chg:.2f}% — bullish momentum")
+    elif chg<-0.5: sc-=25; rs.append(f"NIFTY down {chg:.2f}% — bearish momentum")
+    if p>0 and (h-l)>0:
+        pr=(spot-l)/(h-l)
+        if pr>0.7:   sc+=15; rs.append("Spot in upper 30% of day's range")
+        elif pr<0.3: sc-=15; rs.append("Spot in lower 30% of day's range")
+    if o>0:
+        gap=(spot-p)/p*100
+        if gap>0.3:    sc+=10; rs.append(f"Gap up {gap:.2f}%")
+        elif gap<-0.3: sc-=10; rs.append(f"Gap down {gap:.2f}%")
+        if spot>o:   sc+=10; rs.append("Spot above day open — bullish")
+        elif spot<o: sc-=10; rs.append("Spot below day open — bearish")
+    sc=max(-100,min(100,sc))
+    return {"name":"Trend","score":round(sc,1),"signal":"BULL" if sc>15 else "BEAR" if sc<-15 else "NEUTRAL",
+            "confidence":min(95,abs(sc)),"reasons":rs,"data":{"chg":chg,"spot":spot}}
 
 def engine_options(oc):
-    pcr = oc.get("pcr", 1.0); mp = oc.get("max_pain", 0); spot = oc.get("spot", 0)
-    skew = oc.get("iv_skew", 0); sc = 0; rs = []
-    if pcr > 1.5:   sc += 30; rs.append(f"PCR {pcr:.2f} — heavy put writing, bullish signal")
-    elif pcr > 1.2: sc += 15; rs.append(f"PCR {pcr:.2f} — moderate put writing, mild bullish")
-    elif pcr < 0.7: sc -= 30; rs.append(f"PCR {pcr:.2f} — heavy call writing, bearish signal")
-    elif pcr < 0.9: sc -= 15; rs.append(f"PCR {pcr:.2f} — moderate call writing, mild bearish")
+    pcr=oc.get("pcr",1.0); mp=oc.get("max_pain",0); spot=oc.get("spot",0)
+    skew=oc.get("iv_skew",0); sc=0; rs=[]
+    if pcr>1.5:    sc+=30; rs.append(f"PCR {pcr:.2f} — heavy put writing, bullish")
+    elif pcr>1.2:  sc+=15; rs.append(f"PCR {pcr:.2f} — moderate put writing")
+    elif pcr<0.7:  sc-=30; rs.append(f"PCR {pcr:.2f} — heavy call writing, bearish")
+    elif pcr<0.9:  sc-=15; rs.append(f"PCR {pcr:.2f} — moderate call writing")
     if mp and spot:
-        dist = ((spot - mp) / mp) * 100
-        if dist > 1.5:   sc += 20; rs.append(f"Spot {dist:.1f}% above max pain {mp} — bullish pull")
-        elif dist > 0.5: sc += 10; rs.append(f"Spot above max pain {mp}")
-        elif dist < -1.5: sc -= 20; rs.append(f"Spot {abs(dist):.1f}% below max pain {mp} — bearish pull")
-        elif dist < -0.5: sc -= 10; rs.append(f"Spot below max pain {mp}")
-    chain = oc.get("chain", []); atm = oc.get("atm_strike", 0)
-    atm_data = next((c for c in chain if c["strike"] == atm), None)
-    if atm_data:
-        co = atm_data.get("ce_oi_change", 0); po = atm_data.get("pe_oi_change", 0)
-        if co < 0 and po > 0: sc += 20; rs.append("CE OI unwinding + PE OI building at ATM — bullish")
-        elif co > 0 and po < 0: sc -= 20; rs.append("CE OI building + PE OI unwinding at ATM — bearish")
-    if skew > 3:  sc -= 10; rs.append(f"IV skew +{skew:.1f} — PE IV higher, fear elevated")
-    elif skew < -3: sc += 10; rs.append(f"IV skew {skew:.1f} — CE IV higher, upside premium")
-    sc = max(-100, min(100, sc))
-    return {"name": "Options", "score": round(sc, 1), "signal": "BULL" if sc > 15 else "BEAR" if sc < -15 else "NEUTRAL",
-            "confidence": min(95, abs(sc)), "reasons": rs, "data": {"pcr": pcr, "max_pain": mp, "skew": skew}}
+        dist=((spot-mp)/mp)*100
+        if dist>1.5:    sc+=20; rs.append(f"Spot {dist:.1f}% above max pain {mp}")
+        elif dist>0.5:  sc+=10; rs.append(f"Spot above max pain {mp}")
+        elif dist<-1.5: sc-=20; rs.append(f"Spot {abs(dist):.1f}% below max pain {mp}")
+        elif dist<-0.5: sc-=10; rs.append(f"Spot below max pain {mp}")
+    chain=oc.get("chain",[]); atm=oc.get("atm_strike",0)
+    ad=next((c for c in chain if c["strike"]==atm),None)
+    if ad:
+        co=ad.get("ce_oi_change",0); po=ad.get("pe_oi_change",0)
+        if co<0 and po>0: sc+=20; rs.append("CE OI unwinding + PE OI building — bullish")
+        elif co>0 and po<0: sc-=20; rs.append("CE OI building + PE OI unwinding — bearish")
+    if skew>3:    sc-=10; rs.append(f"IV skew +{skew:.1f} — fear elevated")
+    elif skew<-3: sc+=10; rs.append(f"IV skew {skew:.1f} — CE IV higher")
+    sc=max(-100,min(100,sc))
+    return {"name":"Options","score":round(sc,1),"signal":"BULL" if sc>15 else "BEAR" if sc<-15 else "NEUTRAL",
+            "confidence":min(95,abs(sc)),"reasons":rs,"data":{"pcr":pcr,"max_pain":mp,"skew":skew}}
 
 def engine_gamma(oc):
-    chain = oc.get("chain", []); atm = oc.get("atm_strike", 0); sc = 0; rs = []
-    if not chain: return {"name": "Gamma", "score": 0, "signal": "NEUTRAL", "confidence": 0, "reasons": ["No chain data"], "data": {}}
-    step = 100 if atm >= 40000 else 50
-    near = [c for c in chain if abs(c["strike"] - atm) <= 3 * step]
-    ce_oi = sum(c.get("ce_oi", 0) for c in near); pe_oi = sum(c.get("pe_oi", 0) for c in near)
-    tot = ce_oi + pe_oi
-    if tot > 0:
-        ce_pct = ce_oi / tot * 100
-        if ce_pct > 60:  sc -= 20; rs.append(f"Gamma zone CE heavy ({ce_pct:.0f}%) — resistance pressure")
-        elif ce_pct < 40: sc += 20; rs.append(f"Gamma zone PE heavy ({100-ce_pct:.0f}%) — support pressure")
-    above = [c for c in chain if c["strike"] > atm and c["strike"] <= atm + 3*step]
-    below = [c for c in chain if c["strike"] < atm and c["strike"] >= atm - 3*step]
+    chain=oc.get("chain",[]); atm=oc.get("atm_strike",0); sc=0; rs=[]
+    if not chain: return {"name":"Gamma","score":0,"signal":"NEUTRAL","confidence":0,"reasons":["No data"],"data":{}}
+    step=100 if atm>=40000 else 50
+    near=[c for c in chain if abs(c["strike"]-atm)<=3*step]
+    coi=sum(c.get("ce_oi",0) for c in near); poi=sum(c.get("pe_oi",0) for c in near); tot=coi+poi
+    if tot>0:
+        cp=coi/tot*100
+        if cp>60:   sc-=20; rs.append(f"Gamma zone CE heavy ({cp:.0f}%) — resistance")
+        elif cp<40: sc+=20; rs.append(f"Gamma zone PE heavy ({100-cp:.0f}%) — support")
+    above=[c for c in chain if atm<c["strike"]<=atm+3*step]
+    below=[c for c in chain if atm-3*step<=c["strike"]<atm]
     if above and below:
-        above_ce = max(above, key=lambda x: x.get("ce_oi", 0))
-        below_pe = max(below, key=lambda x: x.get("pe_oi", 0))
-        if above_ce.get("ce_oi", 0) > below_pe.get("pe_oi", 0) * 1.5:
-            sc -= 15; rs.append(f"Large CE wall at {above_ce['strike']} — upside capped")
-        elif below_pe.get("pe_oi", 0) > above_ce.get("ce_oi", 0) * 1.5:
-            sc += 15; rs.append(f"Large PE wall at {below_pe['strike']} — downside protected")
-    sc = max(-100, min(100, sc))
-    return {"name": "Gamma", "score": round(sc, 1), "signal": "BULL" if sc > 15 else "BEAR" if sc < -15 else "NEUTRAL",
-            "confidence": min(95, abs(sc)), "reasons": rs, "data": {"ce_oi": ce_oi, "pe_oi": pe_oi}}
+        ac=max(above,key=lambda x:x.get("ce_oi",0)); bp=max(below,key=lambda x:x.get("pe_oi",0))
+        if ac.get("ce_oi",0)>bp.get("pe_oi",0)*1.5:   sc-=15; rs.append(f"CE wall at {ac['strike']}")
+        elif bp.get("pe_oi",0)>ac.get("ce_oi",0)*1.5: sc+=15; rs.append(f"PE wall at {bp['strike']}")
+    sc=max(-100,min(100,sc))
+    return {"name":"Gamma","score":round(sc,1),"signal":"BULL" if sc>15 else "BEAR" if sc<-15 else "NEUTRAL",
+            "confidence":min(95,abs(sc)),"reasons":rs,"data":{"ce_oi":coi,"pe_oi":poi}}
 
-def engine_volatility(idx, oc):
-    vix = idx.get("INDIA VIX", {}).get("last", 15)
-    vix_chg = idx.get("INDIA VIX", {}).get("pChange", 0)
-    sc = 0; rs = []
-    if vix < 12:   sc += 20; rs.append(f"VIX {vix:.1f} — very low fear, CE options cheap")
-    elif vix < 15: sc += 10; rs.append(f"VIX {vix:.1f} — low volatility, stable market")
-    elif vix > 25: sc -= 25; rs.append(f"VIX {vix:.1f} — high fear, market unstable")
-    elif vix > 20: sc -= 15; rs.append(f"VIX {vix:.1f} — elevated fear, caution needed")
-    if vix_chg < -5:  sc += 15; rs.append(f"VIX falling {vix_chg:.1f}% — fear dissipating, bullish")
-    elif vix_chg > 10: sc -= 15; rs.append(f"VIX rising {vix_chg:.1f}% — fear increasing, bearish")
-    sc = max(-100, min(100, sc))
-    return {"name": "Volatility", "score": round(sc, 1), "signal": "BULL" if sc > 15 else "BEAR" if sc < -15 else "NEUTRAL",
-            "confidence": min(95, abs(sc)), "reasons": rs, "data": {"vix": vix, "vix_chg": vix_chg}}
+def engine_volatility(idx,oc):
+    vix=idx.get("INDIA VIX",{}).get("last",15); vc=idx.get("INDIA VIX",{}).get("pChange",0)
+    sc=0; rs=[]
+    if vix<12:   sc+=20; rs.append(f"VIX {vix:.1f} — very low fear")
+    elif vix<15: sc+=10; rs.append(f"VIX {vix:.1f} — low volatility")
+    elif vix>25: sc-=25; rs.append(f"VIX {vix:.1f} — high fear")
+    elif vix>20: sc-=15; rs.append(f"VIX {vix:.1f} — elevated fear")
+    if vc<-5:   sc+=15; rs.append(f"VIX falling {vc:.1f}%")
+    elif vc>10: sc-=15; rs.append(f"VIX rising {vc:.1f}%")
+    sc=max(-100,min(100,sc))
+    return {"name":"Volatility","score":round(sc,1),"signal":"BULL" if sc>15 else "BEAR" if sc<-15 else "NEUTRAL",
+            "confidence":min(95,abs(sc)),"reasons":rs,"data":{"vix":vix,"vix_chg":vc}}
 
-def engine_regime(idx, oc):
-    n = idx.get("NIFTY 50", {}); vix = idx.get("INDIA VIX", {}).get("last", 15)
-    chg = abs(n.get("pChange", 0)); sc = 0; rs = []; mult = 1.0
-    if vix < 15 and chg < 1.5:   sc = 30;  rs.append("Trending regime — directional trades ideal"); mult = 1.2
-    elif vix > 20 or chg > 2.5:  sc = -20; rs.append("High volatility regime — tight SL needed"); mult = 0.7
-    elif chg < 0.5:               sc = -10; rs.append("Sideways regime — options decay trade"); mult = 0.8
-    else:                         sc = 10;  rs.append("Normal regime — standard parameters"); mult = 1.0
-    return {"name": "Regime", "score": round(sc, 1), "signal": "BULL" if sc > 0 else "BEAR" if sc < 0 else "NEUTRAL",
-            "confidence": min(95, abs(sc)), "reasons": rs, "data": {"mult": mult, "regime": rs[0] if rs else ""}}
+def engine_regime(idx,oc):
+    n=idx.get("NIFTY 50",{}); vix=idx.get("INDIA VIX",{}).get("last",15)
+    chg=abs(n.get("pChange",0)); sc=0; rs=[]; mult=1.0
+    if vix<15 and chg<1.5:   sc=30;  rs.append("Trending regime — directional trades ideal"); mult=1.2
+    elif vix>20 or chg>2.5:  sc=-20; rs.append("High vol regime — tight SL needed"); mult=0.7
+    elif chg<0.5:             sc=-10; rs.append("Sideways regime — options decay"); mult=0.8
+    else:                     sc=10;  rs.append("Normal regime"); mult=1.0
+    return {"name":"Regime","score":round(sc,1),"signal":"BULL" if sc>0 else "BEAR" if sc<0 else "NEUTRAL",
+            "confidence":min(95,abs(sc)),"reasons":rs,"data":{"mult":mult}}
 
 def engine_sentiment(fii):
-    fn = fii.get("fii_net", 0); dn = fii.get("dii_net", 0); sc = 0; rs = []
-    if fn > 2000:   sc += 40; rs.append(f"FII strong buyers +₹{fn:.0f}Cr — institutional bullish")
-    elif fn > 500:  sc += 20; rs.append(f"FII buyers +₹{fn:.0f}Cr — positive flow")
-    elif fn > 0:    sc += 10; rs.append(f"FII mild buyers +₹{fn:.0f}Cr")
-    elif fn < -2000: sc -= 40; rs.append(f"FII strong sellers ₹{fn:.0f}Cr — institutional bearish")
-    elif fn < -500:  sc -= 20; rs.append(f"FII sellers ₹{fn:.0f}Cr — negative flow")
-    elif fn < 0:     sc -= 10; rs.append(f"FII mild sellers ₹{fn:.0f}Cr")
-    if dn > 0 and fn > 0:   sc += 10; rs.append(f"Both FII+DII buying — strong support")
-    elif dn < 0 and fn < 0: sc -= 10; rs.append(f"Both FII+DII selling — dual pressure")
-    sc = max(-100, min(100, sc))
-    return {"name": "Sentiment", "score": round(sc, 1), "signal": "BULL" if sc > 15 else "BEAR" if sc < -15 else "NEUTRAL",
-            "confidence": min(95, abs(sc)), "reasons": rs, "data": {"fii_net": fn, "dii_net": dn}}
+    fn=fii.get("fii_net",0); dn=fii.get("dii_net",0); sc=0; rs=[]
+    if fn>2000:    sc+=40; rs.append(f"FII strong buyers +₹{fn:.0f}Cr")
+    elif fn>500:   sc+=20; rs.append(f"FII buyers +₹{fn:.0f}Cr")
+    elif fn>0:     sc+=10; rs.append(f"FII mild buyers +₹{fn:.0f}Cr")
+    elif fn<-2000: sc-=40; rs.append(f"FII strong sellers ₹{fn:.0f}Cr")
+    elif fn<-500:  sc-=20; rs.append(f"FII sellers ₹{fn:.0f}Cr")
+    elif fn<0:     sc-=10; rs.append(f"FII mild sellers ₹{fn:.0f}Cr")
+    if dn>0 and fn>0:   sc+=10; rs.append("Both FII+DII buying — strong support")
+    elif dn<0 and fn<0: sc-=10; rs.append("Both FII+DII selling — dual pressure")
+    sc=max(-100,min(100,sc))
+    return {"name":"Sentiment","score":round(sc,1),"signal":"BULL" if sc>15 else "BEAR" if sc<-15 else "NEUTRAL",
+            "confidence":min(95,abs(sc)),"reasons":rs,"data":{"fii_net":fn,"dii_net":dn}}
 
 def engine_flow(oc):
-    chain = oc.get("chain", []); atm = oc.get("atm_strike", 0); sc = 0; rs = []
-    step = 100 if atm >= 40000 else 50
-    near = [c for c in chain if abs(c["strike"] - atm) <= 5 * step]
-    ca = sum(c.get("ce_oi_change", 0) for c in near if c.get("ce_oi_change", 0) > 0)
-    pa = sum(c.get("pe_oi_change", 0) for c in near if c.get("pe_oi_change", 0) > 0)
-    cu = abs(sum(c.get("ce_oi_change", 0) for c in near if c.get("ce_oi_change", 0) < 0))
-    pu = abs(sum(c.get("pe_oi_change", 0) for c in near if c.get("pe_oi_change", 0) < 0))
-    if pa > ca * 1.5:  sc += 25; rs.append("PE OI building faster — put writing, bulls in control")
-    elif ca > pa * 1.5: sc -= 25; rs.append("CE OI building faster — call writing, bears in control")
-    if pu > pa * 1.2 and cu < pu: sc -= 20; rs.append("PE OI unwinding — bears covering, caution")
-    elif cu > ca * 1.2 and pu < cu: sc += 20; rs.append("CE OI unwinding — bears covering, bullish signal")
-    ocv = sum(c.get("ce_volume", 0) for c in near if c["strike"] > atm + step)
-    opv = sum(c.get("pe_volume", 0) for c in near if c["strike"] < atm - step)
-    if ocv + opv > 0:
-        cpct = ocv / (ocv + opv) * 100
-        if cpct > 65:   sc += 20; rs.append(f"High OTM CE buying ({cpct:.0f}%) — upside chase")
-        elif cpct < 35: sc -= 20; rs.append(f"High OTM PE buying ({100-cpct:.0f}%) — downside hedge")
-    sc = max(-100, min(100, sc))
-    return {"name": "Flow", "score": round(sc, 1), "signal": "BULL" if sc > 15 else "BEAR" if sc < -15 else "NEUTRAL",
-            "confidence": min(95, abs(sc)), "reasons": rs, "data": {"ce_add": ca, "pe_add": pa}}
+    chain=oc.get("chain",[]); atm=oc.get("atm_strike",0); sc=0; rs=[]
+    step=100 if atm>=40000 else 50
+    near=[c for c in chain if abs(c["strike"]-atm)<=5*step]
+    ca=sum(c.get("ce_oi_change",0) for c in near if c.get("ce_oi_change",0)>0)
+    pa=sum(c.get("pe_oi_change",0) for c in near if c.get("pe_oi_change",0)>0)
+    cu=abs(sum(c.get("ce_oi_change",0) for c in near if c.get("ce_oi_change",0)<0))
+    pu=abs(sum(c.get("pe_oi_change",0) for c in near if c.get("pe_oi_change",0)<0))
+    if pa>ca*1.5:   sc+=25; rs.append("PE OI building faster — bulls in control")
+    elif ca>pa*1.5: sc-=25; rs.append("CE OI building faster — bears in control")
+    if pu>pa*1.2 and cu<pu:  sc-=20; rs.append("PE OI unwinding — caution")
+    elif cu>ca*1.2 and pu<cu: sc+=20; rs.append("CE OI unwinding — bullish signal")
+    ocv=sum(c.get("ce_volume",0) for c in near if c["strike"]>atm+step)
+    opv=sum(c.get("pe_volume",0) for c in near if c["strike"]<atm-step)
+    if ocv+opv>0:
+        cp=ocv/(ocv+opv)*100
+        if cp>65:   sc+=20; rs.append(f"High OTM CE buying ({cp:.0f}%)")
+        elif cp<35: sc-=20; rs.append(f"High OTM PE buying ({100-cp:.0f}%)")
+    sc=max(-100,min(100,sc))
+    return {"name":"Flow","score":round(sc,1),"signal":"BULL" if sc>15 else "BEAR" if sc<-15 else "NEUTRAL",
+            "confidence":min(95,abs(sc)),"reasons":rs,"data":{"ce_add":ca,"pe_add":pa}}
 
 NEWS_SIGNALS = {
-    "rate cut": 80, "repo cut": 80, "rate reduce": 80, "stimulus": 70, "gdp growth": 65,
-    "gdp beat": 65, "inflation ease": 60, "cpi lower": 60, "surplus": 55, "buyback": 55,
-    "dividend": 50, "upgrade": 55, "record high": 50, "all time high": 50, "profit surge": 55,
-    "earnings beat": 55, "strong results": 55, "acquisition": 45, "fdi": 60,
-    "foreign inflow": 65, "fii buy": 70, "dii buy": 55, "liquidity": 50,
-    "rate pause": 35, "hold rate": 35, "dovish": 55, "easing": 50,
-    "rate hike": -80, "rate increase": -75, "hawkish": -65, "recession": -80,
-    "inflation surge": -65, "cpi high": -60, "deficit": -55, "downgrade": -60,
-    "war": -75, "conflict": -65, "sanctions": -60, "ban": -55, "tax hike": -55,
-    "loss": -50, "profit fall": -50, "earnings miss": -55, "revenue drop": -50,
-    "layoffs": -40, "bankruptcy": -70, "default": -75, "crisis": -70,
-    "sell off": -65, "fii sell": -70, "outflow": -60, "slowdown": -55,
-    "geopolitical": -45, "tension": -45, "uncertainty": -40,
+    "rate cut":80,"repo cut":80,"stimulus":70,"gdp beat":65,"inflation ease":60,
+    "cpi lower":60,"surplus":55,"buyback":55,"dividend":50,"upgrade":55,
+    "record high":50,"profit surge":55,"earnings beat":55,"fdi":60,
+    "foreign inflow":65,"fii buy":70,"dii buy":55,"dovish":55,"easing":50,"rate pause":35,
+    "rate hike":-80,"hawkish":-65,"recession":-80,"inflation surge":-65,"cpi high":-60,
+    "deficit":-55,"downgrade":-60,"war":-75,"conflict":-65,"sanctions":-60,"tax hike":-55,
+    "loss":-50,"profit fall":-50,"earnings miss":-55,"layoffs":-40,"bankruptcy":-70,
+    "default":-75,"crisis":-70,"sell off":-65,"fii sell":-70,"outflow":-60,"slowdown":-55,
 }
 
 def analyze_news_impact(news_list):
-    impactful = []; total_score = 0; bull_news = []; bear_news = []
+    impactful=[]; total=0
     for item in news_list:
-        title_lower = (item.get("title", "") + " " + item.get("company", "")).lower()
-        score = 0; matched_keywords = []
-        for kw, val in NEWS_SIGNALS.items():
-            if kw in title_lower: score += val; matched_keywords.append(kw)
-        score = max(-100, min(100, score))
-        if abs(score) >= 20:
-            impact_level = "HIGH" if abs(score) >= 60 else "MEDIUM" if abs(score) >= 30 else "LOW"
-            direction = "BULL" if score > 0 else "BEAR"
-            impactful.append({**item, "impact_score": round(score, 1), "impact_level": impact_level,
-                               "direction": direction, "keywords": matched_keywords[:3]})
-            total_score += score
-            if score > 0: bull_news.append(item.get("title", ""))
-            else: bear_news.append(item.get("title", ""))
-    impactful.sort(key=lambda x: abs(x["impact_score"]), reverse=True)
-    news_sentiment = round(total_score / max(1, len(impactful)), 1) if impactful else 0
-    return {"impactful_news": impactful[:10], "news_sentiment_score": news_sentiment,
-            "bull_count": len([i for i in impactful if i["direction"] == "BULL"]),
-            "bear_count": len([i for i in impactful if i["direction"] == "BEAR"]),
-            "total_news_analyzed": len(news_list)}
+        txt=(item.get("title","")+" "+item.get("company","")).lower()
+        sc=0; kws=[]
+        for kw,v in NEWS_SIGNALS.items():
+            if kw in txt: sc+=v; kws.append(kw)
+        sc=max(-100,min(100,sc))
+        if abs(sc)>=20:
+            impactful.append({**item,"impact_score":round(sc,1),
+                "impact_level":"HIGH" if abs(sc)>=60 else "MEDIUM" if abs(sc)>=30 else "LOW",
+                "direction":"BULL" if sc>0 else "BEAR","keywords":kws[:3]})
+            total+=sc
+    impactful.sort(key=lambda x:abs(x["impact_score"]),reverse=True)
+    ns=round(total/max(1,len(impactful)),1) if impactful else 0
+    return {"impactful_news":impactful[:10],"news_sentiment_score":ns,
+            "bull_count":len([i for i in impactful if i["direction"]=="BULL"]),
+            "bear_count":len([i for i in impactful if i["direction"]=="BEAR"]),
+            "total_news_analyzed":len(news_list)}
 
-def engine_news(news_analysis):
-    ns = news_analysis.get("news_sentiment_score", 0)
-    bc = news_analysis.get("bull_count", 0); rc = news_analysis.get("bear_count", 0)
-    sc = max(-100, min(100, ns)); rs = []
-    if bc > rc and abs(sc) > 20:   rs.append(f"{bc} bullish news items — positive macro flow")
-    elif rc > bc and abs(sc) > 20: rs.append(f"{rc} bearish news items — negative macro pressure")
-    else:                           rs.append(f"News sentiment neutral — {bc} bull, {rc} bear")
-    imp = news_analysis.get("impactful_news", [])
-    if imp: rs.append(f"Top impact: {imp[0].get('title', '')[:60]}...")
-    return {"name": "News", "score": round(sc, 1), "signal": "BULL" if sc > 15 else "BEAR" if sc < -15 else "NEUTRAL",
-            "confidence": min(95, abs(sc)), "reasons": rs, "data": {"sentiment": ns, "bull": bc, "bear": rc}}
+def engine_news(na):
+    ns=na.get("news_sentiment_score",0); bc=na.get("bull_count",0); rc=na.get("bear_count",0)
+    sc=max(-100,min(100,ns)); rs=[]
+    if bc>rc and abs(sc)>20:   rs.append(f"{bc} bullish news items")
+    elif rc>bc and abs(sc)>20: rs.append(f"{rc} bearish news items")
+    else:                       rs.append(f"News neutral — {bc} bull, {rc} bear")
+    imp=na.get("impactful_news",[])
+    if imp: rs.append(f"Top: {imp[0].get('title','')[:60]}...")
+    return {"name":"News","score":round(sc,1),"signal":"BULL" if sc>15 else "BEAR" if sc<-15 else "NEUTRAL",
+            "confidence":min(95,abs(sc)),"reasons":rs,"data":{"sentiment":ns}}
 
-WEIGHTS = {"trend": 0.16, "options": 0.18, "gamma": 0.11, "volatility": 0.09,
-           "regime": 0.07, "sentiment": 0.14, "flow": 0.15, "news": 0.10}
+WEIGHTS={"trend":0.16,"options":0.18,"gamma":0.11,"volatility":0.09,
+         "regime":0.07,"sentiment":0.14,"flow":0.15,"news":0.10}
 
 def generate_signal(snapshot):
-    idx = snapshot["indices"]; oc = snapshot["option_data"]; fii = snapshot["fii_dii"]
-    na = snapshot.get("news_analysis", {"news_sentiment_score": 0, "bull_count": 0, "bear_count": 0, "impactful_news": []})
-    e = {
-        "trend":      engine_trend(idx, oc),
-        "options":    engine_options(oc),
-        "gamma":      engine_gamma(oc),
-        "volatility": engine_volatility(idx, oc),
-        "regime":     engine_regime(idx, oc),
-        "sentiment":  engine_sentiment(fii),
-        "flow":       engine_flow(oc),
-        "news":       engine_news(na),
-    }
-    composite = sum(e[k]["score"] * WEIGHTS.get(k, 0) for k in e)
-    mult = e["regime"]["data"].get("mult", 1.0)
-    confidence = round(min(97, max(35, abs(composite) * mult)), 1)
-    bull = sum(1 for v in e.values() if v["signal"] == "BULL")
-    bear = sum(1 for v in e.values() if v["signal"] == "BEAR")
-    conf = bull if composite > 0 else bear
-    if abs(composite) < 25 or conf < 3:
-        action, cls = "WAIT", "wait"
-        sub = f"Low confluence ({conf}/8) — wait for clearer setup"
-    elif composite > 50:   action, cls = "BUY CE", "bull"; sub = f"STRONG BULL — {conf}/8 engines aligned"
-    elif composite > 25:   action, cls = "BUY CE", "bull"; sub = f"BULL — {conf}/8 engines, moderate confidence"
-    elif composite < -50:  action, cls = "BUY PE", "bear"; sub = f"STRONG BEAR — {conf}/8 engines aligned"
-    elif composite < -25:  action, cls = "BUY PE", "bear"; sub = f"BEAR — {conf}/8 engines, moderate confidence"
-    else:                  action, cls = "WAIT",   "wait"; sub = "Borderline — wait for confirmation"
-    reasons = []
-    for k in ["options", "sentiment", "flow", "trend", "gamma", "volatility", "regime", "news"]:
-        if e[k]["reasons"]: reasons.append(e[k]["reasons"][0])
-    spot = oc.get("spot", 0); mp = oc.get("max_pain", spot); atm = oc.get("atm_strike", 0)
-    return {"signal_id": str(uuid.uuid4())[:8], "timestamp": datetime.datetime.now().isoformat(),
-            "symbol": snapshot.get("symbol", "NIFTY"),
-            "action": action, "signal_cls": cls, "signal_sub": sub,
-            "composite": round(composite, 2), "confidence": confidence,
-            "bull_count": bull, "bear_count": bear, "confluence": conf,
-            "engines": {k: {"score": v["score"], "signal": v["signal"], "confidence": v["confidence"]} for k, v in e.items()},
-            "top_reasons": reasons[:8],
-            "market_data": {"spot": spot, "atm": atm, "max_pain": mp,
-                            "pcr": oc.get("pcr", 0), "vix": idx.get("INDIA VIX", {}).get("last", 0),
-                            "fii_net": fii.get("fii_net", 0), "expiry": oc.get("expiry", ""),
-                            "resistances": [c["strike"] for c in oc.get("resistance_strikes", [])],
-                            "supports": [c["strike"] for c in oc.get("support_strikes", [])]},
-            "chain": oc.get("chain", [])}
+    idx=snapshot["indices"]; oc=snapshot["option_data"]; fii=snapshot["fii_dii"]
+    na=snapshot.get("news_analysis",{"news_sentiment_score":0,"bull_count":0,"bear_count":0,"impactful_news":[]})
+    e={"trend":engine_trend(idx,oc),"options":engine_options(oc),"gamma":engine_gamma(oc),
+       "volatility":engine_volatility(idx,oc),"regime":engine_regime(idx,oc),
+       "sentiment":engine_sentiment(fii),"flow":engine_flow(oc),"news":engine_news(na)}
+    composite=sum(e[k]["score"]*WEIGHTS.get(k,0) for k in e)
+    mult=e["regime"]["data"].get("mult",1.0)
+    confidence=round(min(97,max(35,abs(composite)*mult)),1)
+    bull=sum(1 for v in e.values() if v["signal"]=="BULL")
+    bear=sum(1 for v in e.values() if v["signal"]=="BEAR")
+    conf=bull if composite>0 else bear
+    if abs(composite)<25 or conf<3:    action,cls="WAIT","wait";   sub=f"Low confluence ({conf}/8)"
+    elif composite>50:                  action,cls="BUY CE","bull"; sub=f"STRONG BULL — {conf}/8 aligned"
+    elif composite>25:                  action,cls="BUY CE","bull"; sub=f"BULL — {conf}/8 engines"
+    elif composite<-50:                 action,cls="BUY PE","bear"; sub=f"STRONG BEAR — {conf}/8 aligned"
+    elif composite<-25:                 action,cls="BUY PE","bear"; sub=f"BEAR — {conf}/8 engines"
+    else:                               action,cls="WAIT","wait";   sub="Borderline — wait"
+    reasons=[e[k]["reasons"][0] for k in ["options","sentiment","flow","trend","gamma","volatility","regime","news"] if e[k]["reasons"]]
+    spot=oc.get("spot",0); mp=oc.get("max_pain",spot); atm=oc.get("atm_strike",0)
+    return {"signal_id":str(uuid.uuid4())[:8],"timestamp":datetime.datetime.now().isoformat(),
+            "symbol":snapshot.get("symbol","NIFTY"),
+            "action":action,"signal_cls":cls,"signal_sub":sub,
+            "composite":round(composite,2),"confidence":confidence,
+            "bull_count":bull,"bear_count":bear,"confluence":conf,
+            "engines":{k:{"score":v["score"],"signal":v["signal"],"confidence":v["confidence"]} for k,v in e.items()},
+            "top_reasons":reasons[:8],
+            "market_data":{"spot":spot,"atm":atm,"max_pain":mp,"pcr":oc.get("pcr",0),
+                           "vix":idx.get("INDIA VIX",{}).get("last",0),
+                           "fii_net":fii.get("fii_net",0),"expiry":oc.get("expiry",""),
+                           "resistances":[c["strike"] for c in oc.get("resistance_strikes",[])],
+                           "supports":[c["strike"] for c in oc.get("support_strikes",[])]},
+            "chain":oc.get("chain",[])}
 
 # ─── CAPITAL MANAGER ──────────────────────────────────────────────────────────
-LOT_SIZES = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65}
-MARGINS   = {"NIFTY": 6500, "BANKNIFTY": 11000, "FINNIFTY": 6000}
-SL_PCT    = 0.40
-
 class CapMgr:
-    def __init__(self, cfg):
-        self.total = cfg.get("total_capital", 50000)
-        self.risk_pct = cfg.get("risk_per_trade", 2.0)
-        self.rr = cfg.get("rr_ratio", 2.0)
-        self.max_trades = cfg.get("max_trades_day", 3)
-        self.avail = self.total; self.in_trade = 0.0; self.peak = self.total
-        self.ses_trades = self.ses_pnl = self.ses_wins = self.ses_loss = self.consec = 0
-        self.date = datetime.date.today(); self.log = []
-        self._last_cfg = cfg
-
+    def __init__(self,cfg):
+        self.total=cfg.get("total_capital",50000); self.risk_pct=cfg.get("risk_per_trade",2.0)
+        self.rr=cfg.get("rr_ratio",2.0); self.max_trades=cfg.get("max_trades_day",3)
+        self.avail=self.total; self.in_trade=0.0; self.peak=self.total
+        self.ses_trades=self.ses_pnl=self.ses_wins=self.ses_loss=self.consec=0
+        self.date=datetime.date.today(); self._last_cfg=cfg
     def _chk_day(self):
-        if datetime.date.today() != self.date:
-            self.ses_trades = self.ses_pnl = self.ses_wins = self.ses_loss = self.consec = 0
-            self.date = datetime.date.today()
-
+        if datetime.date.today()!=self.date:
+            self.ses_trades=self.ses_pnl=self.ses_wins=self.ses_loss=self.consec=0
+            self.date=datetime.date.today()
     def can_trade(self):
         self._chk_day()
-        if self.ses_trades >= self.max_trades: return {"allowed": False, "reason": f"Max {self.max_trades} trades reached"}
-        dlim = self.total * 0.03
-        if self.ses_pnl <= -dlim: return {"allowed": False, "reason": f"Daily loss limit ₹{dlim:.0f} hit"}
-        dd = (self.peak - self.avail) / self.peak * 100 if self.peak > 0 else 0
-        if dd >= 10: return {"allowed": False, "reason": f"Drawdown {dd:.1f}% — system paused"}
-        return {"allowed": True, "reason": "OK"}
-
-    def calc_position(self, sig, oc):
-        sym = sig.get("symbol", "NIFTY"); action = sig.get("action", "BUY CE")
-        spot = sig.get("market_data", {}).get("spot", 0)
-        atm = sig.get("market_data", {}).get("atm", round(spot / 50) * 50)
-        chain = sig.get("chain", []); exp = sig.get("market_data", {}).get("expiry", "")
-        ls = LOT_SIZES.get(sym, 75); mg = MARGINS.get(sym, 6500)
-
-        cp = pp = 0
-        live_source = "nse_chain"
-
-        # Try live LTP (Kite first, Upstox fallback)
-        broker = active_broker()
-        if broker and exp:
+        if self.ses_trades>=self.max_trades: return {"allowed":False,"reason":f"Max {self.max_trades} trades"}
+        dlim=self.total*0.03
+        if self.ses_pnl<=-dlim: return {"allowed":False,"reason":f"Daily loss ₹{dlim:.0f} hit"}
+        dd=(self.peak-self.avail)/self.peak*100 if self.peak>0 else 0
+        if dd>=10: return {"allowed":False,"reason":f"Drawdown {dd:.1f}% — paused"}
+        return {"allowed":True,"reason":"OK"}
+    def calc_position(self,sig,oc):
+        sym=sig.get("symbol","NIFTY"); action=sig.get("action","BUY CE")
+        spot=sig.get("market_data",{}).get("spot",0)
+        atm=sig.get("market_data",{}).get("atm",round(spot/50)*50)
+        chain=sig.get("chain",[]); exp=sig.get("market_data",{}).get("expiry","")
+        ls=LOT_SIZES.get(sym,75); mg=MARGINS.get(sym,6500)
+        cp=pp=0; live_src="nse_chain"
+        if kite["access_token"] and exp:
             try:
-                live = fetch_live_ltp(sym,
-                    atm if "CE" in action else None,
-                    atm if "PE" in action else None, exp)
-                if live["ce_ltp"] > 0: cp = live["ce_ltp"]; live_source = f"{broker}_live"
-                if live["pe_ltp"] > 0: pp = live["pe_ltp"]; live_source = f"{broker}_live"
+                live=fetch_live_ltp(sym, atm if "CE" in action else None,
+                                        atm if "PE" in action else None, exp)
+                if live["ce_ltp"]>0: cp=live["ce_ltp"]; live_src="kite_live"
+                if live["pe_ltp"]>0: pp=live["pe_ltp"]; live_src="kite_live"
             except: pass
-
-        # Fallback to chain
-        if cp == 0 or pp == 0:
+        if cp==0 or pp==0:
             for c in chain:
-                if c["strike"] == atm:
-                    if cp == 0: cp = c.get("ce_ltp", 0)
-                    if pp == 0: pp = c.get("pe_ltp", 0)
-                    break
-
-        if cp == 0: cp = round(spot * 0.0055, 1)
-        if pp == 0: pp = round(spot * 0.0050, 1)
-
-        rm = 0.5 if self.consec >= 2 else 1.0
-        risk = self.avail * (self.risk_pct / 100) * rm
-        pr = cp if action == "BUY CE" else pp if action == "BUY PE" else (cp + pp) / 2
-        pls = pr * SL_PCT * ls
-        lots = max(1, int(risk / pls)) if pls > 0 else 1
-        mult = 2 if "+" in action else 1
-
-        return {"action": action, "symbol": sym, "expiry": exp,
-                "ce_strike": atm if "CE" in action else None,
-                "pe_strike": atm if "PE" in action else None,
-                "ce_price": round(cp, 1), "pe_price": round(pp, 1),
-                "ce_sl": round(cp * (1 - SL_PCT), 1), "ce_target": round(cp * (1 + self.rr * SL_PCT), 1),
-                "pe_sl": round(pp * (1 - SL_PCT), 1), "pe_target": round(pp * (1 + self.rr * SL_PCT), 1),
-                "lots": lots, "lot_size": ls,
-                "capital_used": int(lots * mg * mult),
-                "max_loss": int(lots * pr * ls * SL_PCT * mult),
-                "target_pnl": int(lots * pr * ls * SL_PCT * mult * self.rr),
-                "risk_reduced": rm < 1.0, "spot": spot, "atm": atm,
-                "ltp_source": live_source}
-
-    def record(self, pnl):
-        self.ses_trades += 1; self.ses_pnl += pnl; self.avail += pnl; self.in_trade = 0
-        if pnl > 0: self.ses_wins += 1; self.consec = 0
-        else: self.ses_loss += 1; self.consec += 1
-        if self.avail > self.peak: self.peak = self.avail
-
+                if c["strike"]==atm:
+                    if cp==0: cp=c.get("ce_ltp",0)
+                    if pp==0: pp=c.get("pe_ltp",0); break
+        if cp==0: cp=round(spot*0.0055,1)
+        if pp==0: pp=round(spot*0.0050,1)
+        rm=0.5 if self.consec>=2 else 1.0
+        risk=self.avail*(self.risk_pct/100)*rm
+        pr=cp if action=="BUY CE" else pp if action=="BUY PE" else (cp+pp)/2
+        pls=pr*SL_PCT*ls; lots=max(1,int(risk/pls)) if pls>0 else 1
+        mult=2 if "+" in action else 1
+        return {"action":action,"symbol":sym,"expiry":exp,
+                "ce_strike":atm if "CE" in action else None,
+                "pe_strike":atm if "PE" in action else None,
+                "ce_price":round(cp,1),"pe_price":round(pp,1),
+                "ce_sl":round(cp*(1-SL_PCT),1),"ce_target":round(cp*(1+self.rr*SL_PCT),1),
+                "pe_sl":round(pp*(1-SL_PCT),1),"pe_target":round(pp*(1+self.rr*SL_PCT),1),
+                "lots":lots,"lot_size":ls,"capital_used":int(lots*mg*mult),
+                "max_loss":int(lots*pr*ls*SL_PCT*mult),
+                "target_pnl":int(lots*pr*ls*SL_PCT*mult*self.rr),
+                "risk_reduced":rm<1.0,"spot":spot,"atm":atm,"ltp_source":live_src}
+    def record(self,pnl):
+        self.ses_trades+=1; self.ses_pnl+=pnl; self.avail+=pnl; self.in_trade=0
+        if pnl>0: self.ses_wins+=1; self.consec=0
+        else:     self.ses_loss+=1; self.consec+=1
+        if self.avail>self.peak: self.peak=self.avail
     def status(self):
-        wr = round(self.ses_wins / self.ses_trades * 100, 1) if self.ses_trades > 0 else 0
-        dlp = round(abs(min(0, self.ses_pnl)) / (self.total * 0.03) * 100, 1) if self.ses_pnl < 0 else 0
-        dd = round((self.peak - self.avail) / self.peak * 100, 2) if self.peak > 0 else 0
-        return {"total_capital": self.total, "available_capital": round(self.avail, 2),
-                "in_trade_capital": round(self.in_trade, 2), "session_pnl": round(self.ses_pnl, 2),
-                "session_trades": self.ses_trades, "session_wins": self.ses_wins, "session_losses": self.ses_loss,
-                "win_rate": wr, "consecutive_loss": self.consec, "drawdown_pct": dd,
-                "daily_loss_used_pct": dlp, "trades_left_today": max(0, self.max_trades - self.ses_trades),
-                "max_trades_day": self.max_trades}
+        wr=round(self.ses_wins/self.ses_trades*100,1) if self.ses_trades>0 else 0
+        dlp=round(abs(min(0,self.ses_pnl))/(self.total*0.03)*100,1) if self.ses_pnl<0 else 0
+        dd=round((self.peak-self.avail)/self.peak*100,2) if self.peak>0 else 0
+        return {"total_capital":self.total,"available_capital":round(self.avail,2),
+                "in_trade_capital":round(self.in_trade,2),"session_pnl":round(self.ses_pnl,2),
+                "session_trades":self.ses_trades,"session_wins":self.ses_wins,"session_losses":self.ses_loss,
+                "win_rate":wr,"consecutive_loss":self.consec,"drawdown_pct":dd,
+                "daily_loss_used_pct":dlp,"trades_left_today":max(0,self.max_trades-self.ses_trades),
+                "max_trades_day":self.max_trades}
 
 # ─── DATABASE ─────────────────────────────────────────────────────────────────
 def init_db():
-    c = sqlite3.connect(DB_PATH); cur = c.cursor()
+    c=sqlite3.connect(DB_PATH); cur=c.cursor()
     cur.executescript("""
     CREATE TABLE IF NOT EXISTS trades(
         id INTEGER PRIMARY KEY AUTOINCREMENT, signal_id TEXT, symbol TEXT, action TEXT,
@@ -1127,528 +843,389 @@ def init_db():
         ce_entry REAL, pe_entry REAL, ce_exit REAL, pe_exit REAL,
         capital_used INTEGER, max_loss INTEGER, target_pnl INTEGER, actual_pnl REAL,
         exit_type TEXT, entry_time TEXT, exit_time TEXT,
-        capital_before REAL, capital_after REAL, ltp_source TEXT);
+        capital_before REAL, capital_after REAL, ltp_source TEXT,
+        kite_ce_order_id TEXT, kite_pe_order_id TEXT);
+    CREATE TABLE IF NOT EXISTS kite_orders(
+        id INTEGER PRIMARY KEY AUTOINCREMENT, trade_id INTEGER,
+        order_id TEXT, tradingsymbol TEXT, transaction_type TEXT,
+        quantity INTEGER, order_type TEXT, status TEXT,
+        placed_at TEXT, response TEXT);
     """); c.commit(); c.close()
 
 def save_trade_db(t):
-    c = sqlite3.connect(DB_PATH); cur = c.cursor()
+    c=sqlite3.connect(DB_PATH); cur=c.cursor()
     cur.execute("""INSERT INTO trades(signal_id,symbol,action,ce_strike,pe_strike,lots,
-        ce_entry,pe_entry,capital_used,max_loss,target_pnl,entry_time,capital_before,ltp_source)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (t.get("signal_id",""), t.get("symbol"), t.get("action"),
-         t.get("ce_strike"), t.get("pe_strike"), t.get("lots"),
-         t.get("ce_price"), t.get("pe_price"), t.get("capital_used"),
-         t.get("max_loss"), t.get("target_pnl"),
-         datetime.datetime.now().isoformat(), t.get("capital_before", 0),
-         t.get("ltp_source", "nse_chain")))
-    tid = cur.lastrowid; c.commit(); c.close(); return tid
+        ce_entry,pe_entry,capital_used,max_loss,target_pnl,entry_time,capital_before,ltp_source,
+        kite_ce_order_id,kite_pe_order_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (t.get("signal_id",""),t.get("symbol"),t.get("action"),
+         t.get("ce_strike"),t.get("pe_strike"),t.get("lots"),
+         t.get("ce_price"),t.get("pe_price"),t.get("capital_used"),
+         t.get("max_loss"),t.get("target_pnl"),datetime.datetime.now().isoformat(),
+         t.get("capital_before",0),t.get("ltp_source","nse_chain"),
+         t.get("kite_ce_order_id",""),t.get("kite_pe_order_id","")))
+    tid=cur.lastrowid; c.commit(); c.close(); return tid
 
-def close_trade_db(tid, ex):
-    c = sqlite3.connect(DB_PATH); cur = c.cursor()
+def close_trade_db(tid,ex):
+    c=sqlite3.connect(DB_PATH); cur=c.cursor()
     cur.execute("""UPDATE trades SET ce_exit=?,pe_exit=?,actual_pnl=?,exit_type=?,
         exit_time=?,capital_after=? WHERE id=?""",
-        (ex.get("ce_exit"), ex.get("pe_exit"), ex.get("pnl"), ex.get("exit_type"),
-         datetime.datetime.now().isoformat(), ex.get("capital_after"), tid))
+        (ex.get("ce_exit"),ex.get("pe_exit"),ex.get("pnl"),ex.get("exit_type"),
+         datetime.datetime.now().isoformat(),ex.get("capital_after"),tid))
     c.commit(); c.close()
 
 def get_history():
     try:
-        c = sqlite3.connect(DB_PATH); c.row_factory = sqlite3.Row; cur = c.cursor()
-        rows = cur.execute("SELECT * FROM trades ORDER BY entry_time DESC LIMIT 50").fetchall()
-        perf = cur.execute("""SELECT COUNT(*) t, SUM(CASE WHEN actual_pnl>0 THEN 1 ELSE 0 END) w,
+        c=sqlite3.connect(DB_PATH); c.row_factory=sqlite3.Row; cur=c.cursor()
+        rows=cur.execute("SELECT * FROM trades ORDER BY entry_time DESC LIMIT 50").fetchall()
+        perf=cur.execute("""SELECT COUNT(*) t,SUM(CASE WHEN actual_pnl>0 THEN 1 ELSE 0 END) w,
             SUM(actual_pnl) p FROM trades WHERE actual_pnl IS NOT NULL""").fetchone()
-        c.close()
-        trades = [dict(r) for r in rows]; pd = dict(perf) if perf else {}
-        if pd.get("t", 0) > 0: pd["win_rate"] = round(pd["w"] / pd["t"] * 100, 1)
-        return trades, pd
-    except: return [], {}
+        c.close(); trades=[dict(r) for r in rows]; pd=dict(perf) if perf else {}
+        if pd.get("t",0)>0: pd["win_rate"]=round(pd["w"]/pd["t"]*100,1)
+        return trades,pd
+    except: return [],{}
 
 # ─── GLOBAL STATE ─────────────────────────────────────────────────────────────
-risk_mgr = None; active_monitor = None; active_tid = None
-last_signal = None; last_pos = None; last_generated_signal = None
+risk_mgr=None; active_monitor=None; active_tid=None
+last_signal=None; last_pos=None; last_generated_signal=None
 
 init_db()
 
-# ─── BACKGROUND THREADS ───────────────────────────────────────────────────────
 def self_ping():
     time.sleep(30)
     while True:
-        try: requests.get(f"{OWN_URL}/ping", timeout=10)
+        try: requests.get(f"{OWN_URL}/ping",timeout=10)
         except: pass
         time.sleep(600)
 
-threading.Thread(target=self_ping, daemon=True).start()
-threading.Thread(target=auto_signal_loop, daemon=True).start()
+threading.Thread(target=self_ping,daemon=True).start()
+threading.Thread(target=auto_signal_loop,daemon=True).start()
 
-# Auto-connect if tokens pre-set via env vars
-if kite_state["access_token"]:
-    kite_state["connected"] = True
-    start_ltp_polling()
-    threading.Thread(target=start_kite_ws, daemon=True).start()
-    print("[KITE] Pre-set token found — connecting WS")
+if kite["access_token"]:
+    kite["connected"]=True; start_ltp_polling()
+    threading.Thread(target=start_kite_ws,daemon=True).start()
+    print("[KITE] Pre-set token — connecting WS")
 
-if upstox_state["access_token"]:
-    upstox_state["connected"] = True
-    if not kite_state["connected"]:
-        start_ltp_polling()
-    threading.Thread(target=start_upstox_ws, daemon=True).start()
-    print("[UPSTOX] Pre-set token found — connecting WS (fallback)")
-
-# ─── SHARED SIGNAL GENERATOR ─────────────────────────────────────────────────
 def _do_generate_signal(cfg):
-    global last_generated_signal, last_pos, last_signal
-    sym = cfg.get("symbol", "NIFTY")
-    if risk_mgr is None: return None, None, None, None
-
-    idx = fetch_indices(); oc = fetch_chain(sym); fii = fetch_fii()
-    if "error" in oc: return None, None, None, {"error": f"Data fetch failed: {oc['error']}"}
-
-    news_raw = []; na = {"news_sentiment_score": 0, "bull_count": 0, "bear_count": 0, "impactful_news": []}
+    global last_generated_signal,last_pos,last_signal
+    sym=cfg.get("symbol","NIFTY")
+    if risk_mgr is None: return None,None,None,None
+    idx=fetch_indices(); oc=fetch_chain(sym); fii=fetch_fii()
+    if "error" in oc: return None,None,None,{"error":f"Data fetch failed: {oc['error']}"}
+    na={"news_sentiment_score":0,"bull_count":0,"bear_count":0,"impactful_news":[]}
     try:
-        nd = nse_get("https://www.nseindia.com/api/corporate-announcements?index=equities")
-        if nd and isinstance(nd, list):
-            news_raw = [{"title": x.get("subject",""), "company": x.get("symbol",""),
-                         "time": x.get("an_dt","")} for x in nd[:30]]
-        na = analyze_news_impact(news_raw)
-    except Exception as ne: print(f"[NEWS] {ne}")
-
-    snap = {"symbol": sym, "indices": idx, "option_data": oc, "fii_dii": fii, "news_analysis": na}
-    sig = generate_signal(snap); last_signal = sig; last_generated_signal = sig
-
-    ct = risk_mgr.can_trade(); pos = None
-    if sig["action"] != "WAIT" and ct["allowed"]:
-        pos = risk_mgr.calc_position(sig, oc); last_pos = pos
-
-    return sig, pos, ct, None
+        nd=nse_get("https://www.nseindia.com/api/corporate-announcements?index=equities")
+        if nd and isinstance(nd,list):
+            na=analyze_news_impact([{"title":x.get("subject",""),"company":x.get("symbol",""),
+                                     "time":x.get("an_dt","")} for x in nd[:30]])
+    except: pass
+    snap={"symbol":sym,"indices":idx,"option_data":oc,"fii_dii":fii,"news_analysis":na}
+    sig=generate_signal(snap); last_signal=sig; last_generated_signal=sig
+    ct=risk_mgr.can_trade(); pos=None
+    if sig["action"]!="WAIT" and ct["allowed"]:
+        pos=risk_mgr.calc_position(sig,oc); last_pos=pos
+    return sig,pos,ct,None
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  FLASK ROUTES
+#  ROUTES
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/")
 def root():
-    broker = active_broker()
-    return jsonify({
-        "status": "alive", "version": "3.0", "service": "QUANTRA BEAST",
-        "active_broker": broker or "none",
-        "kite_connected":   kite_state["connected"],
-        "kite_ws":          kite_state["ws_connected"],
-        "upstox_connected": upstox_state["connected"],
-        "upstox_ws":        upstox_state["ws_connected"],
-        "time": str(datetime.datetime.now())
-    })
+    return jsonify({"status":"alive","version":"3.0","service":"QUANTRA BEAST",
+                    "broker":"Zerodha Kite","kite_connected":kite["connected"],
+                    "kite_ws":kite["ws_connected"],"time":str(datetime.datetime.now())})
 
 @app.route("/ping")
 def ping():
-    return jsonify({"status": "alive", "version": "3.0",
-                    "active_broker": active_broker() or "none",
-                    "time": str(datetime.datetime.now())})
+    return jsonify({"status":"alive","kite":kite["connected"],"kite_ws":kite["ws_connected"],
+                    "time":str(datetime.datetime.now())})
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  KITE AUTH ROUTES
-# ═══════════════════════════════════════════════════════════════════════════════
-
+# ── Kite Auth ─────────────────────────────────────────────────────────────────
 @app.route("/kite/login-url")
-def kite_login():
-    """Frontend calls this to get Kite OAuth URL"""
-    if not KITE_API_KEY:
-        return jsonify({"error": "KITE_API_KEY not set in Render environment variables"}), 400
-    return jsonify({
-        "login_url": kite_login_url(),
-        "instructions": "Open this URL, login with Zerodha credentials, you'll be redirected back automatically",
-        "redirect_uri": KITE_REDIRECT
-    })
+def kite_login_route():
+    if not KITE_API_KEY: return jsonify({"error":"KITE_API_KEY not set"}),400
+    return jsonify({"login_url":kite_login_url(),
+                    "instructions":"Open URL → login with Zerodha → auto-redirects back",
+                    "redirect_uri":KITE_REDIRECT})
 
 @app.route("/kite/callback")
 def kite_callback():
-    """Zerodha redirects here after login with request_token"""
-    request_token = request.args.get("request_token")
-    status = request.args.get("status", "")
-    if status != "success" or not request_token:
-        err = request.args.get("message", "Login failed or cancelled")
+    rt=request.args.get("request_token"); status=request.args.get("status","")
+    if status!="success" or not rt:
+        err=request.args.get("message","Login failed or cancelled")
         return f"""<html><body style='background:#020b08;color:#ff3355;font-family:monospace;
             display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'>
             <div><div style='font-size:36px'>❌</div>
             <div style='font-size:18px;margin:10px'>Kite login failed</div>
-            <div style='font-size:13px;color:#ff6677'>{err}</div>
-            </div></body></html>""", 400
-
-    success, result = kite_exchange_token(request_token)
+            <div style='font-size:13px;color:#ff6677'>{err}</div></div></body></html>""",400
+    success,result=kite_exchange_token(rt)
     if success:
-        start_ltp_polling()
-        return """<html><body style='background:#020b08;color:#00ff88;font-family:Share Tech Mono,monospace;
-            display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'>
-            <div>
-            <div style='font-size:48px;margin-bottom:20px'>✅</div>
-            <div style='font-size:28px;letter-spacing:3px;margin-bottom:10px'>KITE CONNECTED</div>
-            <div style='color:#00cc66;font-size:14px;margin-bottom:6px'>Live LTP streaming active (primary broker)</div>
-            <div style='color:#5a8a7a;font-size:12px'>WebSocket started — you can close this tab</div>
-            <div style='color:#5a8a7a;font-size:11px;margin-top:10px'>Return to QUANTRA BEAST dashboard</div>
+        name=kite["profile"].get("user_name","")
+        return f"""<html><body style='background:#020b08;color:#00ff88;
+            font-family:Share Tech Mono,monospace;display:flex;align-items:center;
+            justify-content:center;height:100vh;text-align:center'>
+            <div><div style='font-size:48px;margin-bottom:20px'>✅</div>
+            <div style='font-size:28px;letter-spacing:3px;margin-bottom:8px'>KITE CONNECTED</div>
+            <div style='color:#00cc66;font-size:15px;margin-bottom:6px'>Welcome, {name}</div>
+            <div style='color:#5a8a7a;font-size:12px'>Live WebSocket streaming active</div>
+            <div style='color:#5a8a7a;font-size:11px;margin-top:10px'>Return to QUANTRA BEAST</div>
             </div></body></html>"""
-    else:
-        return f"""<html><body style='background:#020b08;color:#ff3355;font-family:monospace;
-            display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;padding:20px'>
-            <div><div style='font-size:36px'>❌</div>
-            <div style='font-size:18px;margin:10px'>Kite Auth Failed</div>
-            <div style='font-size:12px;color:#ff6677;max-width:500px;word-break:break-all'>{result}</div>
-            <div style='font-size:11px;color:#884444;margin-top:15px'>
-            API Key: {KITE_API_KEY[:8] if KITE_API_KEY else 'NOT SET'}... | Redirect: {KITE_REDIRECT}</div>
-            </div></body></html>""", 400
+    return f"""<html><body style='background:#020b08;color:#ff3355;font-family:monospace;
+        display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;padding:20px'>
+        <div><div style='font-size:36px'>❌</div>
+        <div style='font-size:18px;margin:10px'>Auth Failed</div>
+        <div style='font-size:12px;color:#ff6677;max-width:500px;word-break:break-all'>{result}</div>
+        <div style='font-size:11px;color:#884444;margin-top:15px'>
+        API Key: {KITE_API_KEY[:8] if KITE_API_KEY else "NOT SET"}... | Redirect: {KITE_REDIRECT}
+        </div></div></body></html>""",400
 
-@app.route("/kite/set-token", methods=["POST"])
+@app.route("/kite/set-token",methods=["POST"])
 def kite_set_token():
-    """Manually paste access_token (daily reset workaround)"""
-    b = request.get_json(force=True) or {}
-    token = b.get("access_token", "")
-    if not token:
-        return jsonify({"error": "No access_token provided"}), 400
-    kite_state["access_token"]    = token
-    kite_state["connected"]        = True
-    kite_state["last_token_time"]  = datetime.datetime.now().isoformat()
-    kite_state["error"]            = None
+    b=request.get_json(force=True) or {}; token=b.get("access_token","")
+    if not token: return jsonify({"error":"No access_token"}),400
+    kite["access_token"]=token; kite["connected"]=True
+    kite["last_token_time"]=datetime.datetime.now().isoformat(); kite["error"]=None
     start_ltp_polling()
-    threading.Thread(target=start_kite_ws, daemon=True).start()
-    return jsonify({"message": "Kite token set successfully", "connected": True,
-                    "broker": "kite (primary)"})
+    threading.Thread(target=start_kite_ws,daemon=True).start()
+    return jsonify({"message":"Kite token set","connected":True})
+
+@app.route("/kite/logout",methods=["POST"])
+def kite_logout():
+    kite_invalidate_token()
+    return jsonify({"message":"Logged out","connected":False})
 
 @app.route("/kite/status")
 def kite_status():
-    return jsonify({
-        "connected":        kite_state["connected"],
-        "ws_connected":     kite_state["ws_connected"],
-        "last_token_time":  kite_state["last_token_time"],
-        "ltp_tokens_cached": len(kite_state["ltp_cache"]),
-        "error":            kite_state["error"],
-        "has_token":        bool(kite_state["access_token"]),
-        "login_url":        kite_login_url() if KITE_API_KEY else None,
-        "role":             "PRIMARY"
-    })
+    return jsonify({"connected":kite["connected"],"ws_connected":kite["ws_connected"],
+                    "last_token_time":kite["last_token_time"],
+                    "tokens_cached":len(kite["ltp_cache"]),
+                    "subscribed":len(kite["subscribed"]),
+                    "error":kite["error"],"has_token":bool(kite["access_token"]),
+                    "profile":kite["profile"],"login_url":kite_login_url() if KITE_API_KEY else None})
 
 @app.route("/kite/ltp")
 def kite_ltp_route():
-    """Get live LTP for index tokens"""
-    raw = request.args.get("tokens", "")
-    if not raw:
-        return jsonify({"error": "Provide ?tokens=256265,260105"})
-    tokens = [int(t.strip()) for t in raw.split(",") if t.strip().isdigit()]
-    result = kite_get_ltp(tokens)
-    return jsonify({"ltp": result, "kite_connected": kite_state["connected"]})
+    syms=[s.strip() for s in request.args.get("symbols","").split(",") if s.strip()]
+    if not syms: return jsonify({"error":"Provide ?symbols=NSE:NIFTY 50,..."})
+    return jsonify({"ltp":kite_ltp_rest(syms),"ws_connected":kite["ws_connected"]})
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  UPSTOX AUTH ROUTES (FALLBACK)
-# ═══════════════════════════════════════════════════════════════════════════════
+@app.route("/kite/quote")
+def kite_quote_route():
+    syms=[s.strip() for s in request.args.get("symbols","").split(",") if s.strip()]
+    if not syms: return jsonify({"error":"Provide ?symbols=NSE:NIFTY 50"})
+    return jsonify({"quote":kite_quotes(syms)})
 
-@app.route("/upstox/login-url")
-def upstox_login():
-    if not UPSTOX_API_KEY:
-        return jsonify({"error": "UPSTOX_API_KEY not configured"}), 400
-    return jsonify({
-        "login_url": upstox_login_url(),
-        "instructions": "Fallback broker. Use only if Kite is unavailable.",
-        "redirect_uri": UPSTOX_REDIRECT,
-        "role": "FALLBACK"
-    })
+# ── Kite Order Routes ─────────────────────────────────────────────────────────
+@app.route("/kite/orders")
+def kite_orders_route():
+    return jsonify({"orders":kite_get_orders()})
 
-@app.route("/upstox/callback")
-def upstox_callback():
-    code = request.args.get("code")
-    error = request.args.get("error")
-    if error:
-        return f"<h2 style='color:red'>Upstox error: {error}</h2>", 400
-    if not code:
-        return "<h2 style='color:red'>No auth code</h2>", 400
-    success, result = upstox_exchange_token(code)
-    if success:
-        if not kite_state["connected"]:
-            start_ltp_polling()
-        return """<html><body style='background:#020b08;color:#ffaa00;font-family:monospace;
-            display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'>
-            <div>
-            <div style='font-size:48px;margin-bottom:20px'>✅</div>
-            <div style='font-size:24px;letter-spacing:3px'>UPSTOX CONNECTED (FALLBACK)</div>
-            <div style='color:#aa8800;font-size:12px;margin-top:10px'>
-            Active as fallback — connect Kite for better performance</div>
-            </div></body></html>"""
-    return f"<h2 style='color:red'>Upstox auth failed: {result}</h2>", 400
+@app.route("/kite/positions")
+def kite_positions_route():
+    return jsonify({"positions":kite_get_positions()})
 
-@app.route("/upstox/set-token", methods=["POST"])
-def upstox_set_token():
-    b = request.get_json(force=True) or {}
-    token = b.get("access_token", "")
-    if not token: return jsonify({"error": "No token"}), 400
-    upstox_state["access_token"]    = token
-    upstox_state["connected"]        = True
-    upstox_state["last_token_time"]  = datetime.datetime.now().isoformat()
-    upstox_state["error"]            = None
-    if not kite_state["connected"]:
-        start_ltp_polling()
-    threading.Thread(target=start_upstox_ws, daemon=True).start()
-    return jsonify({"message": "Upstox token set (fallback)", "connected": True})
+@app.route("/kite/margins")
+def kite_margins_route():
+    return jsonify({"margins":kite_get_margins()})
 
-@app.route("/upstox/status")
-def upstox_status():
-    return jsonify({
-        "connected":         upstox_state["connected"],
-        "ws_connected":      upstox_state["ws_connected"],
-        "last_token_time":   upstox_state["last_token_time"],
-        "ltp_symbols_cached": len(upstox_state["ltp_cache"]),
-        "error":             upstox_state["error"],
-        "has_token":         bool(upstox_state["access_token"]),
-        "login_url":         upstox_login_url() if UPSTOX_API_KEY else None,
-        "role":              "FALLBACK"
-    })
+@app.route("/kite/place-order",methods=["POST"])
+def kite_place_order_route():
+    if not kite["access_token"]: return jsonify({"error":"Kite not connected"}),400
+    b=request.get_json(force=True) or {}
+    result=kite_place_order(b)
+    return jsonify(result),(200 if "order_id" in result else 400)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  BROKER STATUS COMBINED
-# ═══════════════════════════════════════════════════════════════════════════════
+@app.route("/kite/modify-order/<order_id>",methods=["PUT"])
+def kite_modify_route(order_id):
+    b=request.get_json(force=True) or {}
+    return jsonify(kite_modify_order(order_id,b))
 
-@app.route("/broker/status")
-def broker_status():
-    """Combined broker status — one call for the dashboard"""
-    return jsonify({
-        "active_broker": active_broker() or "none",
-        "kite": {
-            "connected":    kite_state["connected"],
-            "ws_connected": kite_state["ws_connected"],
-            "has_token":    bool(kite_state["access_token"]),
-            "role":         "PRIMARY",
-            "login_url":    kite_login_url() if KITE_API_KEY else None,
-            "error":        kite_state["error"],
-        },
-        "upstox": {
-            "connected":    upstox_state["connected"],
-            "ws_connected": upstox_state["ws_connected"],
-            "has_token":    bool(upstox_state["access_token"]),
-            "role":         "FALLBACK",
-            "login_url":    upstox_login_url() if UPSTOX_API_KEY else None,
-            "error":        upstox_state["error"],
-        }
-    })
+@app.route("/kite/cancel-order/<order_id>",methods=["DELETE"])
+def kite_cancel_route(order_id):
+    variety=request.args.get("variety","regular")
+    return jsonify(kite_cancel_order(order_id,variety))
 
-# ═══════════════════════════════════════════════════════════════════════════════
-#  MAIN SIGNAL + TRADE ROUTES (unchanged logic, updated broker references)
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@app.route("/generate-signal", methods=["POST"])
+# ── Signal + Trade Routes ─────────────────────────────────────────────────────
+@app.route("/generate-signal",methods=["POST"])
 def gen_signal():
     global risk_mgr
-    b = request.get_json(force=True) or {}
-    sym = b.get("symbol", "NIFTY").upper()
-    cfg = {"total_capital": b.get("capital", 50000), "risk_per_trade": b.get("risk_pct", 2.0),
-           "rr_ratio": b.get("rr_ratio", 2.0), "max_trades_day": b.get("max_trades", 3), "symbol": sym}
-    if risk_mgr is None:
-        risk_mgr = CapMgr(cfg)
-    else:
-        risk_mgr._last_cfg = cfg
-
-    sig, pos, ct, err = _do_generate_signal(cfg)
-    if err: return jsonify(err), 503
-
-    idx = fetch_indices(); oc = fetch_chain(sym); fii = fetch_fii()
-    na = {"news_sentiment_score": 0, "bull_count": 0, "bear_count": 0, "impactful_news": []}
+    b=request.get_json(force=True) or {}; sym=b.get("symbol","NIFTY").upper()
+    cfg={"total_capital":b.get("capital",50000),"risk_per_trade":b.get("risk_pct",2.0),
+         "rr_ratio":b.get("rr_ratio",2.0),"max_trades_day":b.get("max_trades",3),"symbol":sym}
+    if risk_mgr is None: risk_mgr=CapMgr(cfg)
+    else: risk_mgr._last_cfg=cfg
+    sig,pos,ct,err=_do_generate_signal(cfg)
+    if err: return jsonify(err),503
+    idx=fetch_indices(); oc=fetch_chain(sym); fii=fetch_fii()
+    na={"news_sentiment_score":0,"bull_count":0,"bear_count":0,"impactful_news":[]}
     try:
-        nd = nse_get("https://www.nseindia.com/api/corporate-announcements?index=equities")
-        if nd and isinstance(nd, list):
-            news_raw = [{"title": x.get("subject",""), "company": x.get("symbol",""),
-                         "time": x.get("an_dt","")} for x in nd[:30]]
-            na = analyze_news_impact(news_raw)
+        nd=nse_get("https://www.nseindia.com/api/corporate-announcements?index=equities")
+        if nd and isinstance(nd,list):
+            na=analyze_news_impact([{"title":x.get("subject",""),"company":x.get("symbol",""),
+                                     "time":x.get("an_dt","")} for x in nd[:30]])
     except: pass
-
-    return jsonify({"signal": sig, "position": pos, "capital": risk_mgr.status(),
-                    "can_trade": ct, "indices": idx, "fii_dii": fii,
-                    "chain": oc.get("chain", []),
-                    "option_meta": {k: v for k, v in oc.items() if k != "chain"},
-                    "news_analysis": na,
-                    "active_broker": active_broker() or "none",
-                    "kite_connected": kite_state["connected"],
-                    "upstox_connected": upstox_state["connected"],
-                    "data_source": oc.get("data_source", "scraperapi")})
+    order_preview=build_order_params(pos) if pos else []
+    return jsonify({"signal":sig,"position":pos,"capital":risk_mgr.status(),"can_trade":ct,
+                    "indices":idx,"fii_dii":fii,"chain":oc.get("chain",[]),
+                    "option_meta":{k:v for k,v in oc.items() if k!="chain"},
+                    "news_analysis":na,"order_preview":order_preview,
+                    "kite_connected":kite["connected"],"kite_ws":kite["ws_connected"],
+                    "data_source":oc.get("data_source","scraperapi")})
 
 @app.route("/latest-signal")
 def latest_signal():
-    if not last_generated_signal:
-        return jsonify({"signal": None, "message": "No signal generated yet"})
-    return jsonify({"signal": last_generated_signal, "position": last_pos,
-                    "capital": risk_mgr.status() if risk_mgr else None,
-                    "active_broker": active_broker() or "none",
-                    "auto_generated": True,
-                    "ts": datetime.datetime.now().isoformat()})
+    if not last_generated_signal: return jsonify({"signal":None,"message":"No signal yet"})
+    return jsonify({"signal":last_generated_signal,"position":last_pos,
+                    "capital":risk_mgr.status() if risk_mgr else None,
+                    "kite_connected":kite["connected"],"auto_generated":True,
+                    "ts":datetime.datetime.now().isoformat()})
 
-@app.route("/trade/enter", methods=["POST"])
+@app.route("/trade/enter",methods=["POST"])
 def trade_enter():
-    global active_monitor, active_tid
-    b = request.get_json(force=True) or {}
-    pos = b.get("position", {}); sig = b.get("signal", last_signal or {})
-    if not pos: return jsonify({"error": "No position"}), 400
-    if risk_mgr is None: return jsonify({"error": "Not initialized"}), 400
-    pos["signal_id"] = sig.get("signal_id", ""); pos["capital_before"] = risk_mgr.avail
-    risk_mgr.in_trade = pos.get("capital_used", 0)
-    tid = save_trade_db(pos); active_tid = tid
-    active_monitor = {"trade": pos, "entry": datetime.datetime.now(),
-                      "trailing": False, "partial": False,
-                      "live_ce_ltp": 0, "live_pe_ltp": 0, "live_spot": 0}
+    global active_monitor,active_tid
+    b=request.get_json(force=True) or {}
+    pos=b.get("position",{}); sig=b.get("signal",last_signal or {})
+    place_orders=b.get("place_orders",False)
+    if not pos: return jsonify({"error":"No position"}),400
+    if risk_mgr is None: return jsonify({"error":"Not initialized"}),400
+    pos["signal_id"]=sig.get("signal_id",""); pos["capital_before"]=risk_mgr.avail
+    risk_mgr.in_trade=pos.get("capital_used",0)
+    kite_ce_oid=kite_pe_oid=""; order_results=[]
+    if place_orders and kite["access_token"]:
+        for o in build_order_params(pos):
+            res=kite_place_order(dict(o)); order_results.append(res)
+            if "order_id" in res:
+                if "CE" in o.get("tag",""): kite_ce_oid=res["order_id"]
+                elif "PE" in o.get("tag",""): kite_pe_oid=res["order_id"]
+    pos["kite_ce_order_id"]=kite_ce_oid; pos["kite_pe_order_id"]=kite_pe_oid
+    tid=save_trade_db(pos); active_tid=tid
+    active_monitor={"trade":pos,"entry":datetime.datetime.now(),
+                    "trailing":False,"partial":False,
+                    "live_ce_ltp":0,"live_pe_ltp":0,"live_spot":0}
     start_ltp_polling()
-    return jsonify({"trade_id": tid, "message": "Trade recorded",
-                    "ltp_source": pos.get("ltp_source", "nse_chain"),
-                    "active_broker": active_broker() or "none"})
+    return jsonify({"trade_id":tid,"message":"Trade recorded",
+                    "ltp_source":pos.get("ltp_source","nse_chain"),
+                    "kite_orders_placed":place_orders,"kite_order_results":order_results})
 
 @app.route("/trade/monitor")
 def trade_monitor():
-    if not active_monitor: return jsonify({"status": "NO_ACTIVE_TRADE"})
-    pos = active_monitor["trade"]; action = pos.get("action", "BUY CE")
-    sym = pos.get("symbol", "NIFTY"); ls = LOT_SIZES.get(sym, 75)
-    lots = pos.get("lots", 1); ce_e = pos.get("ce_price", 0); pe_e = pos.get("pe_price", 0)
-    ce_sl = pos.get("ce_sl", 0); pe_sl = pos.get("pe_sl", 0)
-    ce_tgt = pos.get("ce_target", 0); pe_tgt = pos.get("pe_target", 0)
-    max_loss = pos.get("max_loss", 0); tpnl = pos.get("target_pnl", 0)
-
-    ce_s = active_monitor.get("live_ce_ltp", 0)
-    pe_s = active_monitor.get("live_pe_ltp", 0)
-    ltp_source = active_broker() + "_live" if active_broker() else "nse_chain"
-
-    if ce_s == 0 or pe_s == 0:
-        ltp_source = "nse_chain"
-        oc = fetch_chain(sym); chain = oc.get("chain", [])
-        cs = pos.get("ce_strike"); ps = pos.get("pe_strike")
+    if not active_monitor: return jsonify({"status":"NO_ACTIVE_TRADE"})
+    pos=active_monitor["trade"]; action=pos.get("action","BUY CE")
+    sym=pos.get("symbol","NIFTY"); ls=LOT_SIZES.get(sym,75); lots=pos.get("lots",1)
+    ce_e=pos.get("ce_price",0); pe_e=pos.get("pe_price",0)
+    ce_sl=pos.get("ce_sl",0); pe_sl=pos.get("pe_sl",0)
+    ce_tgt=pos.get("ce_target",0); pe_tgt=pos.get("pe_target",0)
+    max_loss=pos.get("max_loss",0); tpnl=pos.get("target_pnl",0)
+    ce_s=active_monitor.get("live_ce_ltp",0); pe_s=active_monitor.get("live_pe_ltp",0)
+    ltp_src="kite_ws" if kite["ws_connected"] else "kite_rest" if kite["connected"] else "nse_chain"
+    if ce_s==0 or pe_s==0:
+        oc=fetch_chain(sym); chain=oc.get("chain",[])
+        cs=pos.get("ce_strike"); ps=pos.get("pe_strike")
         for c in chain:
-            if cs and c["strike"] == cs and ce_s == 0: ce_s = c.get("ce_ltp", ce_e)
-            if ps and c["strike"] == ps and pe_s == 0: pe_s = c.get("pe_ltp", pe_e)
+            if cs and c["strike"]==cs and ce_s==0: ce_s=c.get("ce_ltp",ce_e)
+            if ps and c["strike"]==ps and pe_s==0: pe_s=c.get("pe_ltp",pe_e)
+        ltp_src="nse_chain"
+    if ce_s==0: ce_s=ce_e
+    if pe_s==0: pe_s=pe_e
+    if action=="BUY CE":   pnl=(ce_s-ce_e)*lots*ls
+    elif action=="BUY PE": pnl=(pe_s-pe_e)*lots*ls
+    else:                  pnl=((ce_s-ce_e)+(pe_s-pe_e))*lots*ls
+    elapsed=int((datetime.datetime.now()-active_monitor["entry"]).total_seconds()//60)
+    pct=round(pnl/max_loss*100,1) if max_loss else 0
+    status="HOLD"; reason=""; urgency="normal"
+    if (action=="BUY CE" and ce_s>0 and ce_s<=ce_sl) or (action=="BUY PE" and pe_s>0 and pe_s<=pe_sl):
+        status="EXIT_SL"; reason=f"SL HIT — P&L ₹{pnl:.0f}"; urgency="critical"
+    elif (action=="BUY CE" and ce_s>=ce_tgt) or (action=="BUY PE" and pe_s>=pe_tgt) or (action=="BUY CE + PE" and pnl>=tpnl):
+        status="EXIT_TARGET"; reason=f"TARGET HIT ₹{pnl:.0f}"; urgency="success"
+    elif pnl>tpnl*0.6 and not active_monitor["trailing"]:
+        active_monitor["trailing"]=True; pos["ce_sl"]=ce_e; pos["pe_sl"]=pe_e
+        status="TRAIL_SL"; reason=f"SL trailed to entry — ₹{pnl:.0f} protected"; urgency="info"
+    elif pnl>tpnl*0.5 and not active_monitor["partial"] and lots>=2:
+        active_monitor["partial"]=True; status="BOOK_PARTIAL"
+        reason=f"Book {lots//2} lots — ₹{pnl:.0f} profit"; urgency="action"
+    elif elapsed>180 and abs(pct)<20:
+        status="TIME_DECAY"; reason=f"Stagnant {elapsed}min — time decay"; urgency="warning"
+    return jsonify({"status":status,"urgency":urgency,"exit_reason":reason,
+                    "pnl":round(pnl,2),"pnl_pct":pct,"elapsed_min":elapsed,
+                    "ce_current":ce_s,"pe_current":pe_s,
+                    "ce_sl":pos.get("ce_sl",ce_sl),"pe_sl":pos.get("pe_sl",pe_sl),
+                    "ce_target":ce_tgt,"pe_target":pe_tgt,
+                    "ltp_source":ltp_src,"live_spot":active_monitor.get("live_spot",0)})
 
-    if ce_s == 0: ce_s = ce_e
-    if pe_s == 0: pe_s = pe_e
-
-    pnl = 0
-    if action == "BUY CE":    pnl = (ce_s - ce_e) * lots * ls
-    elif action == "BUY PE":  pnl = (pe_s - pe_e) * lots * ls
-    else:                     pnl = ((ce_s - ce_e) + (pe_s - pe_e)) * lots * ls
-
-    elapsed = int((datetime.datetime.now() - active_monitor["entry"]).total_seconds() // 60)
-    pct = round(pnl / max_loss * 100, 1) if max_loss else 0
-    status = "HOLD"; reason = ""; urgency = "normal"
-
-    if (action == "BUY CE" and ce_s > 0 and ce_s <= ce_sl) or (action == "BUY PE" and pe_s > 0 and pe_s <= pe_sl):
-        status = "EXIT_SL"; reason = f"SL HIT — P&L ₹{pnl:.0f}"; urgency = "critical"
-    elif (action == "BUY CE" and ce_s >= ce_tgt) or (action == "BUY PE" and pe_s >= pe_tgt) or (action == "BUY CE + PE" and pnl >= tpnl):
-        status = "EXIT_TARGET"; reason = f"TARGET HIT ₹{pnl:.0f}"; urgency = "success"
-    elif pnl > tpnl * 0.6 and not active_monitor["trailing"]:
-        active_monitor["trailing"] = True; pos["ce_sl"] = ce_e; pos["pe_sl"] = pe_e
-        status = "TRAIL_SL"; reason = f"SL trailed to entry — ₹{pnl:.0f} protected"; urgency = "info"
-    elif pnl > tpnl * 0.5 and not active_monitor["partial"] and lots >= 2:
-        active_monitor["partial"] = True; status = "BOOK_PARTIAL"
-        reason = f"Book {lots//2} lots — ₹{pnl:.0f} profit"; urgency = "action"
-    elif elapsed > 180 and abs(pct) < 20:
-        status = "TIME_DECAY"; reason = f"Stagnant {elapsed}min — time decay warning"; urgency = "warning"
-
-    return jsonify({"status": status, "urgency": urgency, "exit_reason": reason,
-                    "pnl": round(pnl, 2), "pnl_pct": pct, "elapsed_min": elapsed,
-                    "ce_current": ce_s, "pe_current": pe_s,
-                    "ce_sl": pos.get("ce_sl", ce_sl), "pe_sl": pos.get("pe_sl", pe_sl),
-                    "ce_target": ce_tgt, "pe_target": pe_tgt,
-                    "ltp_source": ltp_source,
-                    "live_spot": active_monitor.get("live_spot", 0)})
-
-@app.route("/trade/exit", methods=["POST"])
+@app.route("/trade/exit",methods=["POST"])
 def trade_exit():
-    global active_monitor, active_tid
-    b = request.get_json(force=True) or {}
-    pnl = float(b.get("pnl", 0)); etype = b.get("exit_type", "MANUAL")
-    if risk_mgr is None: return jsonify({"error": "Not initialized"}), 400
+    global active_monitor,active_tid
+    b=request.get_json(force=True) or {}
+    pnl=float(b.get("pnl",0)); etype=b.get("exit_type","MANUAL")
+    if risk_mgr is None: return jsonify({"error":"Not initialized"}),400
     risk_mgr.record(pnl)
-    if active_tid:
-        close_trade_db(active_tid, {"pnl": pnl, "exit_type": etype, "capital_after": risk_mgr.avail})
-    active_monitor = None; active_tid = None
-    return jsonify({"message": f"Closed ₹{pnl:.0f}", "capital": risk_mgr.status(),
-                    "next_can_trade": risk_mgr.can_trade()})
+    if active_tid: close_trade_db(active_tid,{"pnl":pnl,"exit_type":etype,"capital_after":risk_mgr.avail})
+    active_monitor=None; active_tid=None
+    return jsonify({"message":f"Closed ₹{pnl:.0f}","capital":risk_mgr.status(),
+                    "next_can_trade":risk_mgr.can_trade()})
 
 @app.route("/capital")
 def capital():
-    if not risk_mgr: return jsonify({"error": "Not initialized"})
+    if not risk_mgr: return jsonify({"error":"Not initialized"})
     return jsonify(risk_mgr.status())
 
-@app.route("/capital/reset", methods=["POST"])
+@app.route("/capital/reset",methods=["POST"])
 def cap_reset():
     global risk_mgr
-    b = request.get_json(force=True) or {}
-    risk_mgr = CapMgr({"total_capital": b.get("capital", 50000), "risk_per_trade": b.get("risk_pct", 2.0),
-                        "rr_ratio": b.get("rr_ratio", 2.0), "max_trades_day": b.get("max_trades", 3)})
-    return jsonify({"message": "Reset", "capital": risk_mgr.status()})
+    b=request.get_json(force=True) or {}
+    risk_mgr=CapMgr({"total_capital":b.get("capital",50000),"risk_per_trade":b.get("risk_pct",2.0),
+                      "rr_ratio":b.get("rr_ratio",2.0),"max_trades_day":b.get("max_trades",3)})
+    return jsonify({"message":"Reset","capital":risk_mgr.status()})
 
 @app.route("/history")
 def history():
-    trades, perf = get_history()
-    return jsonify({"trades": trades, "performance": perf})
+    trades,perf=get_history()
+    return jsonify({"trades":trades,"performance":perf})
 
 @app.route("/gift-nifty")
 def gift_nifty():
-    c = _cget("gift")
+    c=_cget("gift")
     if c: return jsonify(c)
-    gift = {}
-    # Try Kite first
-    if kite_state["access_token"]:
-        try:
-            ltp = get_index_ltp("NIFTY 50")
-            if ltp > 0:
-                gift = {"last": ltp, "change": 0, "pChange": 0,
-                        "market": "GIFT NIFTY", "note": "Live via Kite", "source": "kite"}
-        except: pass
-    # Upstox fallback
-    if not gift and upstox_state["access_token"]:
-        try:
-            q = upstox_get_ltp(["NSE_INDEX|Nifty 50"])
-            if "NSE_INDEX|Nifty 50" in q:
-                ltp = q["NSE_INDEX|Nifty 50"]["ltp"]
-                gift = {"last": ltp, "change": 0, "pChange": 0,
-                        "market": "GIFT NIFTY", "note": "Live via Upstox", "source": "upstox"}
-        except: pass
+    ltp=get_index_ltp("NIFTY 50")
+    gift=({"last":ltp,"change":0,"pChange":0,"market":"GIFT NIFTY",
+           "note":"Live via Kite WS" if kite["ws_connected"] else "Via Kite REST","source":"kite"}
+          if ltp>0 else {})
     if not gift:
-        idx = _cget("idx") or {}
-        n = idx.get("NIFTY 50", {})
-        gift = {"last": n.get("last", 0), "change": n.get("change", 0),
-                "pChange": n.get("pChange", 0), "market": "GIFT NIFTY (approx)",
-                "note": "Showing NIFTY spot as proxy", "source": "nse_approx"}
-    _cset("gift", gift)
-    return jsonify(gift)
+        idx=_cget("idx") or {}; n=idx.get("NIFTY 50",{})
+        gift={"last":n.get("last",0),"change":n.get("change",0),"pChange":n.get("pChange",0),
+              "market":"GIFT NIFTY (approx)","source":"nse"}
+    _cset("gift",gift); return jsonify(gift)
 
 @app.route("/market-news")
 def market_news():
-    c = _cget("news", ttl=120)
+    c=_cget("news",ttl=120)
     if c: return jsonify(c)
-    news = []
+    news=[]
     try:
-        d = nse_get("https://www.nseindia.com/api/corporate-announcements?index=equities")
-        if d and isinstance(d, list):
+        d=nse_get("https://www.nseindia.com/api/corporate-announcements?index=equities")
+        if d and isinstance(d,list):
             for item in d[:15]:
-                news.append({"title": item.get("subject","") or item.get("desc",""),
-                              "company": item.get("symbol",""),
-                              "time": item.get("an_dt","") or item.get("exchdisstime",""),
-                              "type": "CORP"})
+                news.append({"title":item.get("subject","") or item.get("desc",""),
+                              "company":item.get("symbol",""),
+                              "time":item.get("an_dt","") or item.get("exchdisstime",""),
+                              "type":"CORP"})
     except: pass
-    try:
-        ms = nse_get("https://www.nseindia.com/api/marketStatus")
-        if ms:
-            for m in ms.get("marketState", []):
-                if m.get("marketStatus"):
-                    news.insert(0, {"title": f"{m.get('market','')} — {m.get('marketStatus','').upper()} | {m.get('tradeDate','')}",
-                                    "company": "NSE", "time": "", "type": "MARKET"})
-    except: pass
-    if not news:
-        news = [{"title": "Market data loading...", "company": "", "time": "", "type": "INFO"}]
-    result = {"news": news, "count": len(news), "fetched_at": datetime.datetime.now().isoformat()}
-    _cset("news", result)
-    return jsonify(result)
+    if not news: news=[{"title":"Market data loading...","company":"","time":"","type":"INFO"}]
+    result={"news":news,"count":len(news),"fetched_at":datetime.datetime.now().isoformat()}
+    _cset("news",result); return jsonify(result)
 
 @app.route("/market-status")
 def mkt_status():
-    now = datetime.datetime.now(); wd = now.weekday()
-    mo = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    mc = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    if wd >= 5:   s, sess = "CLOSED", "Weekend"
-    elif now < now.replace(hour=9, minute=0, second=0, microsecond=0): s, sess = "CLOSED", "Pre-Market"
-    elif now < mo: s, sess = "PRE-OPEN", "Pre-Open 9:00–9:15"
-    elif now <= mc: s, sess = "OPEN", f"Live | {int((mc-now).total_seconds()//60)}m to close"
-    else:          s, sess = "CLOSED", "After Market"
-    return jsonify({"status": s, "session": sess, "is_open": s == "OPEN",
-                    "time": now.strftime("%H:%M:%S"), "date": now.strftime("%d %b %Y")})
+    now=datetime.datetime.now(); wd=now.weekday()
+    mo=now.replace(hour=9,minute=15,second=0,microsecond=0)
+    mc=now.replace(hour=15,minute=30,second=0,microsecond=0)
+    if wd>=5:    s,sess="CLOSED","Weekend"
+    elif now<now.replace(hour=9,minute=0,second=0,microsecond=0): s,sess="CLOSED","Pre-Market"
+    elif now<mo: s,sess="PRE-OPEN","Pre-Open 9:00–9:15"
+    elif now<=mc: s,sess="OPEN",f"Live | {int((mc-now).total_seconds()//60)}m to close"
+    else:         s,sess="CLOSED","After Market"
+    return jsonify({"status":s,"session":sess,"is_open":s=="OPEN",
+                    "time":now.strftime("%H:%M:%S"),"date":now.strftime("%d %b %Y")})
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0",port=5000,debug=False)
