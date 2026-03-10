@@ -1,7 +1,6 @@
 # core/kite_client.py
 # QUANTRA BEAST v3.2 — Kite Connect Client
 # Auth, WebSocket, REST LTP/Quotes, Order placement
-# Extracted from api/server.py v3.2
 
 import requests, time, json, datetime, threading, hashlib, struct, ssl, os
 
@@ -27,9 +26,9 @@ def _kh(kite_state: dict) -> dict:
         "Authorization":  f"token {KITE_API_KEY}:{kite_state['access_token']}",
     }
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 #  AUTH
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 
 def kite_login_url() -> str | None:
     if not KITE_API_KEY: return None
@@ -37,7 +36,6 @@ def kite_login_url() -> str | None:
 
 def kite_exchange_token(request_token: str, kite_state: dict,
                          on_success_callback=None) -> tuple[bool, str]:
-    """Exchange request_token for access_token. Updates kite_state in-place."""
     try:
         checksum = hashlib.sha256(
             f"{KITE_API_KEY}{request_token}{KITE_API_SECRET}".encode()
@@ -93,9 +91,9 @@ def kite_invalidate_token(kite_state: dict):
     kite_state["error"]        = None
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 #  WEBSOCKET
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 
 def _parse_kite_binary(data: bytes, kite_state: dict):
     try:
@@ -185,9 +183,9 @@ def kite_ws_subscribe(tokens: list, kite_state: dict):
         print(f"[KITE WS SUBSCRIBE] {e}")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 #  REST — QUOTES & LTP
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 
 def kite_quotes(exchange_symbols: list, kite_state: dict) -> dict:
     if not kite_state.get("access_token"): return {}
@@ -199,15 +197,14 @@ def kite_quotes(exchange_symbols: list, kite_state: dict) -> dict:
         result = {}
         if d.get("status") == "success":
             for key, val in d.get("data", {}).items():
-                ohlc = val.get("ohlc", {})
                 ltp  = val.get("last_price", 0)
-                prev = ohlc.get("close", 0)
-                if prev == 0: prev = ohlc.get("open", ltp)
-                if prev == 0: prev = ltp
+                prev = val.get("ohlc", {}).get("close", ltp)
                 chg  = round(ltp - prev, 2)
-                pchg = round(chg / prev * 100, 2) if prev else 0
+                pchg = round((chg / prev * 100) if prev else 0, 2)
+                ohlc = val.get("ohlc", {})
                 result[key] = {
-                    "ltp": ltp, "open": ohlc.get("open", 0),
+                    "last": ltp, "ltp": ltp,
+                    "open": ohlc.get("open", 0),
                     "high": ohlc.get("high", 0), "low": ohlc.get("low", 0),
                     "close": prev, "volume": val.get("volume", 0),
                     "oi": val.get("oi", 0), "ts": time.time(),
@@ -273,9 +270,9 @@ def fetch_live_ltp(symbol: str, strike_ce, strike_pe,
     return {"spot_ltp": spot, "ce_ltp": ce_ltp, "pe_ltp": pe_ltp, "source": src}
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 #  ORDER PLACEMENT
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════
 
 def _option_sym(symbol: str, strike, otype: str, expiry_str: str) -> str | None:
     try:
@@ -339,8 +336,25 @@ def kite_get_orders(kite_state: dict) -> list:
         r = requests.get("https://api.kite.trade/orders",
                          headers=_kh(kite_state), timeout=10)
         d = r.json()
-        return d.get("data", []) if d.get("status") == "success" else []
-    except:
+        if d.get("status") != "success":
+            return []
+        orders = d.get("data", [])
+        enriched = []
+        for o in orders:
+            avg    = float(o.get("average_price") or 0)
+            ltp    = float(o.get("last_price") or 0)
+            filled = int(o.get("filled_quantity") or 0)
+            side   = (o.get("transaction_type") or "BUY").upper()
+            pnl    = None
+            if avg > 0 and ltp > 0 and filled > 0:
+                pnl = round((ltp - avg) * filled * (1 if side == "BUY" else -1), 2)
+            o["computed_pnl"]    = pnl
+            o["filled_quantity"] = filled
+            enriched.append(o)
+        enriched.sort(key=lambda x: x.get("order_timestamp", ""), reverse=True)
+        return enriched
+    except Exception as e:
+        print(f"[ORDERS] {e}")
         return []
 
 def kite_get_positions(kite_state: dict) -> dict:
@@ -364,12 +378,12 @@ def kite_get_margins(kite_state: dict) -> dict:
         return {}
 
 def build_order_params(pos: dict) -> list:
-    action   = pos.get("action", "BUY CE")
-    sym      = pos.get("symbol", "NIFTY")
-    exp      = pos.get("expiry", "")
-    lots     = pos.get("lots", 1)
-    qty      = lots * LOT_SIZES.get(sym, 75)
-    orders   = []
+    action = pos.get("action", "BUY CE")
+    sym    = pos.get("symbol", "NIFTY")
+    exp    = pos.get("expiry", "")
+    lots   = pos.get("lots", 1)
+    qty    = lots * LOT_SIZES.get(sym, 75)
+    orders = []
     if "CE" in action and pos.get("ce_strike"):
         es = _option_sym(sym, pos["ce_strike"], "CE", exp)
         if es:
