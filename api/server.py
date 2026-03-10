@@ -14,11 +14,11 @@ SCRAPER_KEY   = os.environ.get("SCRAPER_API_KEY", "620fb119d0569d21a4303effdd303
 DB_PATH       = os.environ.get("DB_PATH", "/tmp/quantra.db")
 OWN_URL       = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:5000")
 
-# Upstox credentials — set these in Render environment variables
-UPSTOX_API_KEY    = os.environ.get("UPSTOX_API_KEY", "")
-UPSTOX_API_SECRET = os.environ.get("UPSTOX_API_SECRET", "")
+# Upstox credentials — env vars take priority, fallback to hardcoded
+UPSTOX_API_KEY    = os.environ.get("UPSTOX_API_KEY", "62061cdf-3269-4e07-a805-fa96b4fb99d6")
+UPSTOX_API_SECRET = os.environ.get("UPSTOX_API_SECRET", "odruq4i9jo")
 UPSTOX_TOTP_KEY   = os.environ.get("UPSTOX_TOTP_KEY", "")  # optional for auto-login
-UPSTOX_REDIRECT   = os.environ.get("UPSTOX_REDIRECT", f"{OWN_URL}/upstox/callback")
+UPSTOX_REDIRECT   = os.environ.get("UPSTOX_REDIRECT", "https://quantra-beast.onrender.com/upstox/callback")
 
 # ─── UPSTOX STATE ────────────────────────────
 upstox_state = {
@@ -67,6 +67,7 @@ def upstox_login_url():
 def upstox_exchange_token(auth_code):
     """Exchange auth code for access token"""
     try:
+        print(f"[UPSTOX] Exchanging code, api_key={UPSTOX_API_KEY[:8]}..., redirect={UPSTOX_REDIRECT}")
         r = requests.post("https://api.upstox.com/v2/login/authorization/token", data={
             "code": auth_code,
             "client_id": UPSTOX_API_KEY,
@@ -75,20 +76,23 @@ def upstox_exchange_token(auth_code):
             "grant_type": "authorization_code"
         }, headers={"Content-Type": "application/x-www-form-urlencoded",
                     "Accept": "application/json"}, timeout=15)
+        print(f"[UPSTOX] Token response status: {r.status_code}, body: {r.text[:300]}")
         d = r.json()
         if "access_token" in d:
             upstox_state["access_token"] = d["access_token"]
             upstox_state["connected"] = True
             upstox_state["last_token_time"] = datetime.datetime.now().isoformat()
             upstox_state["error"] = None
-            print(f"[UPSTOX] Token obtained successfully")
-            # Start websocket after getting token
+            print(f"[UPSTOX] ✅ Token obtained successfully")
             threading.Thread(target=start_upstox_ws, daemon=True).start()
             return True, d["access_token"]
         else:
-            upstox_state["error"] = d.get("message", "Token exchange failed")
-            return False, d.get("message", "Failed")
+            err = d.get("message", d.get("error_description", str(d)))
+            print(f"[UPSTOX] ❌ Token exchange failed: {err}")
+            upstox_state["error"] = err
+            return False, err
     except Exception as e:
+        print(f"[UPSTOX] ❌ Exception: {e}")
         upstox_state["error"] = str(e)
         return False, str(e)
 
@@ -924,6 +928,14 @@ def upstox_login():
 def upstox_callback():
     """Upstox redirects here after login with auth code"""
     code = request.args.get("code")
+    error = request.args.get("error")
+    if error:
+        return f"""<html><body style='background:#020b08;color:#ff3355;font-family:monospace;
+            display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'>
+            <div><div style='font-size:36px'>❌</div>
+            <div style='font-size:18px;margin:10px'>Upstox returned error:</div>
+            <div style='font-size:14px;color:#ff6677'>{error}: {request.args.get('error_description','')}</div>
+            </div></body></html>""", 400
     if not code:
         return "<h2 style='color:red;font-family:monospace'>No auth code received from Upstox</h2>", 400
     success, result = upstox_exchange_token(code)
@@ -938,7 +950,14 @@ def upstox_callback():
             <div style='color:#5a8a7a;font-size:11px;margin-top:10px'>Return to QUANTRA BEAST dashboard</div>
             </div></body></html>"""
     else:
-        return f"<h2 style='color:red;font-family:monospace'>Auth failed: {result}</h2>", 400
+        return f"""<html><body style='background:#020b08;color:#ff3355;font-family:monospace;
+            display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;padding:20px'>
+            <div><div style='font-size:36px'>❌</div>
+            <div style='font-size:18px;margin:10px'>Auth Failed</div>
+            <div style='font-size:12px;color:#ff6677;max-width:500px;word-break:break-all'>{result}</div>
+            <div style='font-size:11px;color:#884444;margin-top:15px'>Check Render logs for details.<br>
+            API Key: {UPSTOX_API_KEY[:8]}... | Redirect: {UPSTOX_REDIRECT}</div>
+            </div></body></html>""", 400
 
 @app.route("/upstox/set-token", methods=["POST"])
 def upstox_set_token():
