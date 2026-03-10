@@ -1,6 +1,7 @@
 """
-QUANTRA BEAST v2 — Production Server with Upstox Live Feed
-8 signal engines + Upstox websocket LTP + capital management + DB
+QUANTRA BEAST v3 — Production Server
+Zerodha Kite (PRIMARY) + Upstox (FALLBACK) Live Feed
+8 signal engines + dual-broker websocket LTP + capital management + DB
 """
 from flask import Flask, jsonify, request, redirect
 from flask_cors import CORS
@@ -9,29 +10,65 @@ import requests, json, time, datetime, threading, os, uuid, sqlite3, hashlib
 app  = Flask(__name__)
 CORS(app)
 
-# ─── ENV CONFIG ──────────────────────────────
+# ─── ENV CONFIG ──────────────────────────────────────────────────────────────
 SCRAPER_KEY   = os.environ.get("SCRAPER_API_KEY", "620fb119d0569d21a4303effdd303228")
 DB_PATH       = os.environ.get("DB_PATH", "/tmp/quantra.db")
-OWN_URL       = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:5000")
+OWN_URL       = os.environ.get("RENDER_EXTERNAL_URL", "https://quantra-beast.onrender.com")
 
-# Upstox credentials — env vars take priority, fallback to hardcoded
+# ─── ZERODHA KITE CREDENTIALS ────────────────────────────────────────────────
+KITE_API_KEY    = os.environ.get("KITE_API_KEY", "")         # set in Render env vars
+KITE_API_SECRET = os.environ.get("KITE_API_SECRET", "")      # set in Render env vars
+KITE_REDIRECT   = os.environ.get("KITE_REDIRECT", f"{OWN_URL}/kite/callback")
+
+# ─── UPSTOX CREDENTIALS (FALLBACK) ───────────────────────────────────────────
 UPSTOX_API_KEY    = os.environ.get("UPSTOX_API_KEY", "62061cdf-3269-4e07-a805-fa96b4fb99d6")
 UPSTOX_API_SECRET = os.environ.get("UPSTOX_API_SECRET", "odruq4i9jo")
-UPSTOX_TOTP_KEY   = os.environ.get("UPSTOX_TOTP_KEY", "")  # optional for auto-login
-UPSTOX_REDIRECT   = os.environ.get("UPSTOX_REDIRECT", "https://quantra-beast.onrender.com/upstox/callback")
+UPSTOX_REDIRECT   = os.environ.get("UPSTOX_REDIRECT", f"{OWN_URL}/upstox/callback")
 
-# ─── UPSTOX STATE ────────────────────────────
-upstox_state = {
-    "access_token": os.environ.get("UPSTOX_ACCESS_TOKEN", ""),  # can pre-set daily token
-    "connected": False,
+# ─── KITE STATE ───────────────────────────────────────────────────────────────
+kite_state = {
+    "access_token":    os.environ.get("KITE_ACCESS_TOKEN", ""),
+    "request_token":   "",
+    "connected":       False,
+    "ws_connected":    False,
     "last_token_time": None,
-    "ltp_cache": {},           # symbol -> {ltp, ts}
-    "ws_connected": False,
-    "subscribed_symbols": set(),
-    "error": None,
+    "ltp_cache":       {},   # instrument_token (int) -> {ltp, ts}
+    "ltp_cache_sym":   {},   # symbol string      -> {ltp, ts}  (e.g. "NIFTY 50")
+    "subscribed":      set(),
+    "error":           None,
 }
 
-# ─── CACHE ───────────────────────────────────
+# ─── UPSTOX STATE (FALLBACK) ──────────────────────────────────────────────────
+upstox_state = {
+    "access_token":    os.environ.get("UPSTOX_ACCESS_TOKEN", ""),
+    "connected":       False,
+    "last_token_time": None,
+    "ltp_cache":       {},
+    "ws_connected":    False,
+    "error":           None,
+}
+
+# ─── KITE INSTRUMENT TOKENS (NSE indices & common F&O) ───────────────────────
+# These are fixed Zerodha instrument tokens for indices
+KITE_INDEX_TOKENS = {
+    "NIFTY 50":        256265,
+    "NIFTY BANK":      260105,
+    "INDIA VIX":       264969,
+    "NIFTY FIN SERVICE": 257801,
+    "SENSEX":          265,
+}
+KITE_INDEX_TOKEN_TO_NAME = {v: k for k, v in KITE_INDEX_TOKENS.items()}
+
+# Upstox instrument keys for indices (fallback)
+UPSTOX_KEYS = {
+    "NIFTY":     "NSE_INDEX|Nifty 50",
+    "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+    "FINNIFTY":  "NSE_INDEX|Nifty Fin Service",
+    "INDIA VIX": "NSE_INDEX|India VIX",
+    "SENSEX":    "BSE_INDEX|SENSEX",
+}
+
+# ─── CACHE ────────────────────────────────────────────────────────────────────
 _cache = {}
 def _cget(k, ttl=60):
     e = _cache.get(k)
@@ -39,7 +76,7 @@ def _cget(k, ttl=60):
     return e["d"]
 def _cset(k, d): _cache[k] = {"ts": time.time(), "d": d}
 
-# ─── SCRAPER API (NSE OI data) ───────────────
+# ─── SCRAPER API (NSE OI data) ────────────────────────────────────────────────
 def nse_get(url, retries=3):
     for i in range(retries):
         try:
@@ -55,248 +92,509 @@ def nse_get(url, retries=3):
             print(f"[NSE] Error {i+1}: {e}"); time.sleep(2)
     return None
 
-# ─── UPSTOX AUTH ─────────────────────────────
-def upstox_login_url():
-    """Generate Upstox OAuth login URL — user visits once daily"""
-    if not UPSTOX_API_KEY:
-        return None
-    return (f"https://api.upstox.com/v2/login/authorization/dialog"
-            f"?response_type=code&client_id={UPSTOX_API_KEY}"
-            f"&redirect_uri={UPSTOX_REDIRECT}")
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ZERODHA KITE — AUTH
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def upstox_exchange_token(auth_code):
-    """Exchange auth code for access token"""
+def kite_login_url():
+    """Generate Kite Connect OAuth login URL — user visits once daily"""
+    if not KITE_API_KEY:
+        return None
+    return f"https://kite.zerodha.com/connect/login?v=3&api_key={KITE_API_KEY}"
+
+def kite_exchange_token(request_token):
+    """Exchange request_token for access_token using checksum auth"""
     try:
-        print(f"[UPSTOX] Exchanging code, api_key={UPSTOX_API_KEY[:8]}..., redirect={UPSTOX_REDIRECT}")
-        r = requests.post("https://api.upstox.com/v2/login/authorization/token", data={
-            "code": auth_code,
-            "client_id": UPSTOX_API_KEY,
-            "client_secret": UPSTOX_API_SECRET,
-            "redirect_uri": UPSTOX_REDIRECT,
-            "grant_type": "authorization_code"
-        }, headers={"Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json"}, timeout=15)
-        print(f"[UPSTOX] Token response status: {r.status_code}, body: {r.text[:300]}")
+        checksum = hashlib.sha256(
+            f"{KITE_API_KEY}{request_token}{KITE_API_SECRET}".encode()
+        ).hexdigest()
+        print(f"[KITE] Exchanging request_token, api_key={KITE_API_KEY[:8]}...")
+        r = requests.post(
+            "https://api.kite.trade/session/token",
+            data={
+                "api_key":       KITE_API_KEY,
+                "request_token": request_token,
+                "checksum":      checksum,
+            },
+            headers={"X-Kite-Version": "3"},
+            timeout=15
+        )
+        print(f"[KITE] Token response: {r.status_code} — {r.text[:300]}")
         d = r.json()
-        if "access_token" in d:
-            upstox_state["access_token"] = d["access_token"]
-            upstox_state["connected"] = True
-            upstox_state["last_token_time"] = datetime.datetime.now().isoformat()
-            upstox_state["error"] = None
-            print(f"[UPSTOX] ✅ Token obtained successfully")
-            threading.Thread(target=start_upstox_ws, daemon=True).start()
-            return True, d["access_token"]
+        if d.get("status") == "success":
+            data = d.get("data", {})
+            token = data.get("access_token", "")
+            kite_state["access_token"]    = token
+            kite_state["request_token"]   = request_token
+            kite_state["connected"]        = True
+            kite_state["last_token_time"]  = datetime.datetime.now().isoformat()
+            kite_state["error"]            = None
+            print(f"[KITE] ✅ Token obtained: {token[:10]}...")
+            threading.Thread(target=start_kite_ws, daemon=True).start()
+            return True, token
         else:
-            err = d.get("message", d.get("error_description", str(d)))
-            print(f"[UPSTOX] ❌ Token exchange failed: {err}")
-            upstox_state["error"] = err
+            err = d.get("message", str(d))
+            print(f"[KITE] ❌ Token exchange failed: {err}")
+            kite_state["error"] = err
             return False, err
     except Exception as e:
-        print(f"[UPSTOX] ❌ Exception: {e}")
-        upstox_state["error"] = str(e)
+        print(f"[KITE] ❌ Exception: {e}")
+        kite_state["error"] = str(e)
         return False, str(e)
 
-def upstox_headers():
+def kite_headers():
     return {
-        "Authorization": f"Bearer {upstox_state['access_token']}",
-        "Accept": "application/json"
+        "X-Kite-Version": "3",
+        "Authorization":  f"token {KITE_API_KEY}:{kite_state['access_token']}",
     }
 
-# ─── UPSTOX LIVE LTP ─────────────────────────
-def upstox_get_ltp(instrument_keys):
-    """Fetch live LTP for list of instrument keys from Upstox"""
-    if not upstox_state["access_token"]:
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ZERODHA KITE — LIVE LTP (REST fallback when WS is not streaming yet)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def kite_get_ltp(instrument_tokens: list):
+    """
+    Fetch LTP via Kite REST API.
+    instrument_tokens: list of ints  e.g. [256265, 260105]
+    Returns dict: {token_int: {"ltp": float, "ts": float}}
+    """
+    if not kite_state["access_token"]:
         return {}
     try:
-        keys_str = ",".join(instrument_keys)
+        params = [("i", f"NSE:{t}") if t not in [265] else ("i", f"BSE:{t}") for t in instrument_tokens]
+        # For index tokens use the exchange:tradingsymbol format
+        # Kite LTP endpoint accepts instrument token directly too
+        token_strs = "&".join(f"i={t}" for t in instrument_tokens)
         r = requests.get(
-            f"https://api.upstox.com/v2/market-quote/ltp",
-            params={"instrument_key": keys_str},
-            headers=upstox_headers(), timeout=10
+            f"https://api.kite.trade/quote/ltp?{token_strs}",
+            headers=kite_headers(), timeout=10
         )
         d = r.json()
         result = {}
         if d.get("status") == "success":
             for key, val in d.get("data", {}).items():
-                result[key] = {
-                    "ltp": val.get("last_price", 0),
-                    "ts": time.time()
-                }
-                upstox_state["ltp_cache"][key] = result[key]
+                # key is like "NSE:256265" or instrument_token
+                token = val.get("instrument_token")
+                ltp   = val.get("last_price", 0)
+                if token:
+                    result[token] = {"ltp": ltp, "ts": time.time()}
+                    kite_state["ltp_cache"][token] = result[token]
         return result
     except Exception as e:
-        print(f"[UPSTOX LTP] Error: {e}")
+        print(f"[KITE LTP] Error: {e}")
         return {}
 
-def upstox_get_quotes(instrument_keys):
-    """Full quote — ltp, open, high, low, close, volume"""
-    if not upstox_state["access_token"]:
+def kite_get_quotes_by_symbol(exchange_symbols: list):
+    """
+    Fetch full OHLCV quote by exchange:symbol strings.
+    e.g. ["NSE:NIFTY 50", "NSE:NIFTY BANK"]
+    """
+    if not kite_state["access_token"]:
         return {}
     try:
-        keys_str = ",".join(instrument_keys)
+        token_strs = "&".join(f"i={s}" for s in exchange_symbols)
         r = requests.get(
-            f"https://api.upstox.com/v2/market-quote/quotes",
-            params={"instrument_key": keys_str},
-            headers=upstox_headers(), timeout=10
+            f"https://api.kite.trade/quote?{token_strs}",
+            headers=kite_headers(), timeout=10
         )
         d = r.json()
         result = {}
         if d.get("status") == "success":
             for key, val in d.get("data", {}).items():
                 ohlc = val.get("ohlc", {})
+                ltp  = val.get("last_price", 0)
                 result[key] = {
-                    "ltp": val.get("last_price", 0),
-                    "open": ohlc.get("open", 0),
-                    "high": ohlc.get("high", 0),
-                    "low": ohlc.get("low", 0),
+                    "ltp":   ltp,
+                    "open":  ohlc.get("open", 0),
+                    "high":  ohlc.get("high", 0),
+                    "low":   ohlc.get("low", 0),
                     "close": ohlc.get("close", 0),
                     "volume": val.get("volume", 0),
-                    "bid": val.get("depth", {}).get("buy", [{}])[0].get("price", 0),
-                    "ask": val.get("depth", {}).get("sell", [{}])[0].get("price", 0),
+                    "ts":    time.time()
+                }
+                # also cache by instrument_token
+                tok = val.get("instrument_token")
+                if tok:
+                    kite_state["ltp_cache"][tok] = {"ltp": ltp, "ts": time.time()}
+                kite_state["ltp_cache_sym"][key] = {"ltp": ltp, "ts": time.time()}
+        return result
+    except Exception as e:
+        print(f"[KITE QUOTES] Error: {e}")
+        return {}
+
+def kite_get_option_ltp(symbol, strike, option_type, expiry_str):
+    """
+    Fetch live LTP for a specific option via Kite REST.
+    symbol: NIFTY / BANKNIFTY / FINNIFTY
+    expiry_str: '13-Mar-2025'  (Kite format)
+    option_type: CE / PE
+    Returns float ltp
+    """
+    if not kite_state["access_token"]:
+        return 0
+    try:
+        # Build tradingsymbol: NIFTY25MAR22300CE
+        exp = datetime.datetime.strptime(expiry_str, "%d-%b-%Y")
+        ts  = f"{symbol}{exp.strftime('%y%b').upper()}{int(strike)}{option_type}"
+        r   = requests.get(
+            f"https://api.kite.trade/quote/ltp?i=NFO:{ts}",
+            headers=kite_headers(), timeout=10
+        )
+        d = r.json()
+        if d.get("status") == "success":
+            for key, val in d.get("data", {}).items():
+                return val.get("last_price", 0)
+    except Exception as e:
+        print(f"[KITE OPT LTP] {e}")
+    return 0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ZERODHA KITE — WEBSOCKET STREAMING (KiteTicker protocol)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def start_kite_ws():
+    """Start Kite WebSocket (KiteTicker) for live LTP streaming"""
+    if not kite_state["access_token"] or not KITE_API_KEY:
+        return
+    try:
+        import websocket as ws_lib
+        import struct, ssl
+
+        WS_URL = f"wss://ws.kite.trade?api_key={KITE_API_KEY}&access_token={kite_state['access_token']}"
+
+        # Tokens to subscribe — all index tokens
+        DEFAULT_TOKENS = list(KITE_INDEX_TOKENS.values())
+
+        def _subscribe(ws, tokens):
+            msg = json.dumps({"a": "subscribe", "v": tokens})
+            ws.send(msg)
+            mode_msg = json.dumps({"a": "mode", "v": ["ltp", tokens]})
+            ws.send(mode_msg)
+            kite_state["subscribed"].update(tokens)
+            print(f"[KITE WS] Subscribed to {len(tokens)} tokens")
+
+        def _parse_binary(data):
+            """Parse Kite binary tick packet"""
+            try:
+                if len(data) < 2: return
+                num_packets = struct.unpack(">H", data[:2])[0]
+                offset = 2
+                for _ in range(num_packets):
+                    if offset + 2 > len(data): break
+                    pkt_len = struct.unpack(">H", data[offset:offset+2])[0]
+                    offset += 2
+                    pkt = data[offset:offset+pkt_len]
+                    offset += pkt_len
+                    if len(pkt) < 8: continue
+                    token = struct.unpack(">I", pkt[0:4])[0]
+                    ltp   = struct.unpack(">I", pkt[4:8])[0] / 100.0
+                    kite_state["ltp_cache"][token] = {"ltp": ltp, "ts": time.time()}
+                    sym = KITE_INDEX_TOKEN_TO_NAME.get(token)
+                    if sym:
+                        kite_state["ltp_cache_sym"][sym] = {"ltp": ltp, "ts": time.time()}
+            except Exception as e:
+                print(f"[KITE WS PARSE] {e}")
+
+        def on_open(ws):
+            kite_state["ws_connected"] = True
+            print("[KITE WS] ✅ Connected")
+            _subscribe(ws, DEFAULT_TOKENS)
+
+        def on_message(ws, message):
+            if isinstance(message, bytes):
+                _parse_binary(message)
+            else:
+                try:
+                    d = json.loads(message)
+                    if d.get("type") == "order":
+                        print(f"[KITE WS] Order update: {d}")
+                except: pass
+
+        def on_close(ws, *args):
+            kite_state["ws_connected"] = False
+            print("[KITE WS] Disconnected — retrying in 30s")
+            time.sleep(30)
+            if kite_state["access_token"]:
+                threading.Thread(target=start_kite_ws, daemon=True).start()
+
+        def on_error(ws, error):
+            print(f"[KITE WS] Error: {error}")
+
+        ws_obj = ws_lib.WebSocketApp(
+            WS_URL,
+            on_open=on_open,
+            on_message=on_message,
+            on_close=on_close,
+            on_error=on_error,
+        )
+        ws_obj.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+
+    except Exception as e:
+        print(f"[KITE WS] Start error: {e}")
+
+def kite_subscribe_option_tokens(tokens: list):
+    """Subscribe additional F&O tokens to existing WS — called when trade entered"""
+    # Best-effort: if WS running, send subscribe message
+    # Since we can't hold ws_obj reference easily, we cache and re-subscribe on next connect
+    kite_state["subscribed"].update(tokens)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  UPSTOX — AUTH & LTP (FALLBACK)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def upstox_login_url():
+    if not UPSTOX_API_KEY: return None
+    return (f"https://api.upstox.com/v2/login/authorization/dialog"
+            f"?response_type=code&client_id={UPSTOX_API_KEY}"
+            f"&redirect_uri={UPSTOX_REDIRECT}")
+
+def upstox_exchange_token(auth_code):
+    try:
+        r = requests.post("https://api.upstox.com/v2/login/authorization/token", data={
+            "code": auth_code, "client_id": UPSTOX_API_KEY,
+            "client_secret": UPSTOX_API_SECRET, "redirect_uri": UPSTOX_REDIRECT,
+            "grant_type": "authorization_code"
+        }, headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"}, timeout=15)
+        d = r.json()
+        if "access_token" in d:
+            upstox_state["access_token"]    = d["access_token"]
+            upstox_state["connected"]        = True
+            upstox_state["last_token_time"]  = datetime.datetime.now().isoformat()
+            upstox_state["error"]            = None
+            threading.Thread(target=start_upstox_ws, daemon=True).start()
+            return True, d["access_token"]
+        err = d.get("message", str(d))
+        upstox_state["error"] = err
+        return False, err
+    except Exception as e:
+        upstox_state["error"] = str(e)
+        return False, str(e)
+
+def upstox_headers():
+    return {"Authorization": f"Bearer {upstox_state['access_token']}", "Accept": "application/json"}
+
+def upstox_get_ltp(instrument_keys):
+    if not upstox_state["access_token"]: return {}
+    try:
+        r = requests.get("https://api.upstox.com/v2/market-quote/ltp",
+            params={"instrument_key": ",".join(instrument_keys)},
+            headers=upstox_headers(), timeout=10)
+        d = r.json(); result = {}
+        if d.get("status") == "success":
+            for key, val in d.get("data", {}).items():
+                result[key] = {"ltp": val.get("last_price", 0), "ts": time.time()}
+                upstox_state["ltp_cache"][key] = result[key]
+        return result
+    except Exception as e:
+        print(f"[UPSTOX LTP] {e}"); return {}
+
+def upstox_get_quotes(instrument_keys):
+    if not upstox_state["access_token"]: return {}
+    try:
+        r = requests.get("https://api.upstox.com/v2/market-quote/quotes",
+            params={"instrument_key": ",".join(instrument_keys)},
+            headers=upstox_headers(), timeout=10)
+        d = r.json(); result = {}
+        if d.get("status") == "success":
+            for key, val in d.get("data", {}).items():
+                ohlc = val.get("ohlc", {})
+                result[key] = {
+                    "ltp": val.get("last_price", 0), "open": ohlc.get("open", 0),
+                    "high": ohlc.get("high", 0), "low": ohlc.get("low", 0),
+                    "close": ohlc.get("close", 0), "volume": val.get("volume", 0),
                     "ts": time.time()
                 }
                 upstox_state["ltp_cache"][key] = result[key]
         return result
     except Exception as e:
-        print(f"[UPSTOX QUOTES] Error: {e}")
-        return {}
-
-# Upstox instrument keys for indices
-UPSTOX_KEYS = {
-    "NIFTY":      "NSE_INDEX|Nifty 50",
-    "BANKNIFTY":  "NSE_INDEX|Nifty Bank",
-    "FINNIFTY":   "NSE_INDEX|Nifty Fin Service",
-    "INDIA VIX":  "NSE_INDEX|India VIX",
-    "SENSEX":     "BSE_INDEX|SENSEX",
-}
+        print(f"[UPSTOX QUOTES] {e}"); return {}
 
 def upstox_key_for_option(symbol, strike, option_type, expiry_str):
-    """
-    Build Upstox instrument key for an option.
-    expiry_str format: '2025-03-13'
-    option_type: 'CE' or 'PE'
-    """
-    # Format: NSE_FO|NIFTY25MAR22300CE
     try:
         exp = datetime.datetime.strptime(expiry_str, "%d-%b-%Y")
-        exp_code = exp.strftime("%y%b").upper()  # 25MAR
+        exp_code = exp.strftime("%y%b").upper()
         return f"NSE_FO|{symbol}{exp_code}{strike}{option_type}"
-    except:
-        return None
+    except: return None
 
-def fetch_live_ltp_upstox(symbol, strike_ce, strike_pe, expiry):
-    """Fetch real live LTP for CE and PE from Upstox"""
-    keys = []
-    idx_key = UPSTOX_KEYS.get(symbol, f"NSE_INDEX|Nifty 50")
-    keys.append(idx_key)
-
-    ce_key = upstox_key_for_option(symbol, strike_ce, "CE", expiry) if strike_ce else None
-    pe_key = upstox_key_for_option(symbol, strike_pe, "PE", expiry) if strike_pe else None
-    if ce_key: keys.append(ce_key)
-    if pe_key: keys.append(pe_key)
-
-    quotes = upstox_get_ltp([k for k in keys if k])
-    return {
-        "spot_ltp": quotes.get(idx_key, {}).get("ltp", 0),
-        "ce_ltp":   quotes.get(ce_key, {}).get("ltp", 0) if ce_key else 0,
-        "pe_ltp":   quotes.get(pe_key, {}).get("ltp", 0) if pe_key else 0,
-        "ce_key":   ce_key,
-        "pe_key":   pe_key,
-        "source":   "upstox_live"
-    }
-
-# ─── UPSTOX WEBSOCKET ────────────────────────
 def start_upstox_ws():
-    """Start Upstox websocket for live streaming"""
-    if not upstox_state["access_token"]:
-        return
+    if not upstox_state["access_token"]: return
     try:
-        import websocket as ws_lib
-        import ssl
-
+        import websocket as ws_lib, ssl
         def on_message(ws, message):
             try:
                 data = json.loads(message) if isinstance(message, str) else {}
-                # Handle upstox binary feed — update ltp_cache
                 if isinstance(data, dict) and data.get("type") == "live_feed":
                     for key, val in data.get("feeds", {}).items():
                         if "ff" in val:
                             ltp = val["ff"].get("marketFF", {}).get("ltpc", {}).get("ltp", 0)
                             upstox_state["ltp_cache"][key] = {"ltp": ltp, "ts": time.time()}
             except: pass
-
         def on_open(ws):
             upstox_state["ws_connected"] = True
-            print("[UPSTOX WS] Connected")
-
+            print("[UPSTOX WS] Connected (fallback)")
         def on_close(ws, *args):
             upstox_state["ws_connected"] = False
-            print("[UPSTOX WS] Disconnected — will retry in 30s")
             time.sleep(30)
             threading.Thread(target=start_upstox_ws, daemon=True).start()
-
-        def on_error(ws, error):
-            print(f"[UPSTOX WS] Error: {error}")
-
-        ws_url = f"wss://api.upstox.com/v2/feed/market-data-feed/authorize?api_version=2"
-        # Get ws auth token
+        def on_error(ws, error): print(f"[UPSTOX WS] {error}")
+        ws_url = "wss://api.upstox.com/v2/feed/market-data-feed/authorize?api_version=2"
         r = requests.get(ws_url, headers=upstox_headers(), timeout=10)
         ws_data = r.json()
         authorized_url = ws_data.get("data", {}).get("authorizedRedirectUri", "")
-        if not authorized_url:
-            print("[UPSTOX WS] Could not get websocket URL"); return
-        ws_obj = ws_lib.WebSocketApp(authorized_url,
-            on_open=on_open, on_message=on_message,
-            on_close=on_close, on_error=on_error)
-        ws_obj.run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
+        if not authorized_url: return
+        ws_lib.WebSocketApp(authorized_url, on_open=on_open, on_message=on_message,
+            on_close=on_close, on_error=on_error).run_forever(sslopt={"cert_reqs": ssl.CERT_NONE})
     except Exception as e:
-        print(f"[UPSTOX WS] Start error: {e}")
+        print(f"[UPSTOX WS] {e}")
 
-# ─── UPSTOX POLLING THREAD (fallback if WS unavailable) ─
-_monitor_ltp_thread_running = False
+# ═══════════════════════════════════════════════════════════════════════════════
+#  UNIFIED LTP RESOLVER — Kite first, Upstox fallback
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def active_broker():
+    """Returns 'kite' if Kite connected, 'upstox' if fallback connected, else None"""
+    if kite_state["connected"] and kite_state["access_token"]:
+        return "kite"
+    if upstox_state["connected"] and upstox_state["access_token"]:
+        return "upstox"
+    return None
+
+def get_index_ltp(name: str) -> float:
+    """
+    Get live LTP for an index by common name.
+    e.g. 'NIFTY 50', 'NIFTY BANK', 'INDIA VIX'
+    Kite WS cache → Kite REST → Upstox → 0
+    """
+    # 1. Try Kite WS cache (fastest, sub-second)
+    cached = kite_state["ltp_cache_sym"].get(name)
+    if cached and time.time() - cached["ts"] < 10:
+        return cached["ltp"]
+
+    token = KITE_INDEX_TOKENS.get(name)
+    if token:
+        cached = kite_state["ltp_cache"].get(token)
+        if cached and time.time() - cached["ts"] < 10:
+            return cached["ltp"]
+
+    # 2. Kite REST
+    if kite_state["access_token"]:
+        try:
+            sym_map = {
+                "NIFTY 50":          "NSE:NIFTY 50",
+                "NIFTY BANK":        "NSE:NIFTY BANK",
+                "INDIA VIX":         "NSE:INDIA VIX",
+                "NIFTY FIN SERVICE": "NSE:NIFTY FIN SERVICE",
+                "SENSEX":            "BSE:SENSEX",
+            }
+            ks = sym_map.get(name)
+            if ks:
+                q = kite_get_quotes_by_symbol([ks])
+                if ks in q:
+                    return q[ks]["ltp"]
+        except: pass
+
+    # 3. Upstox REST fallback
+    if upstox_state["access_token"]:
+        upx_map = {
+            "NIFTY 50":          "NSE_INDEX|Nifty 50",
+            "NIFTY BANK":        "NSE_INDEX|Nifty Bank",
+            "INDIA VIX":         "NSE_INDEX|India VIX",
+            "NIFTY FIN SERVICE": "NSE_INDEX|Nifty Fin Service",
+            "SENSEX":            "BSE_INDEX|SENSEX",
+        }
+        key = upx_map.get(name)
+        if key:
+            q = upstox_get_ltp([key])
+            if key in q:
+                return q[key]["ltp"]
+    return 0
+
+def get_option_ltp(symbol, strike, option_type, expiry_str) -> float:
+    """Get live option LTP — Kite first, Upstox fallback"""
+    # Kite REST
+    if kite_state["access_token"]:
+        ltp = kite_get_option_ltp(symbol, strike, option_type, expiry_str)
+        if ltp > 0:
+            return ltp
+
+    # Upstox fallback
+    if upstox_state["access_token"]:
+        key = upstox_key_for_option(symbol, strike, option_type, expiry_str)
+        if key:
+            q = upstox_get_ltp([key])
+            if key in q:
+                return q[key]["ltp"]
+    return 0
+
+def fetch_live_ltp(symbol, strike_ce, strike_pe, expiry):
+    """Unified option + spot LTP fetch"""
+    # Map symbol name to index name
+    idx_name_map = {"NIFTY": "NIFTY 50", "BANKNIFTY": "NIFTY BANK", "FINNIFTY": "NIFTY FIN SERVICE"}
+    idx_name = idx_name_map.get(symbol, "NIFTY 50")
+    spot = get_index_ltp(idx_name)
+
+    ce_ltp = get_option_ltp(symbol, strike_ce, "CE", expiry) if strike_ce else 0
+    pe_ltp = get_option_ltp(symbol, strike_pe, "PE", expiry) if strike_pe else 0
+
+    broker = active_broker() or "none"
+    return {
+        "spot_ltp": spot,
+        "ce_ltp":   ce_ltp,
+        "pe_ltp":   pe_ltp,
+        "source":   f"{broker}_live"
+    }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  LTP POLLING THREAD (Kite REST poll every 5s — fallback when WS unavailable)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_ltp_poll_running = False
 def start_ltp_polling():
-    """Poll live LTP every 5s for active trade monitoring"""
-    global _monitor_ltp_thread_running
-    if _monitor_ltp_thread_running: return
-    _monitor_ltp_thread_running = True
+    global _ltp_poll_running
+    if _ltp_poll_running: return
+    _ltp_poll_running = True
     def poll():
         while True:
             try:
-                if upstox_state["access_token"] and active_monitor:
+                broker = active_broker()
+                if broker and active_monitor:
                     pos = active_monitor.get("trade", {})
-                    sym = pos.get("symbol", "NIFTY")
-                    cs = pos.get("ce_strike"); ps = pos.get("pe_strike")
+                    sym = pos.get("symbol", "NIFTY"); cs = pos.get("ce_strike"); ps = pos.get("pe_strike")
                     exp = pos.get("expiry", "")
                     if cs or ps:
-                        live = fetch_live_ltp_upstox(sym, cs, ps, exp)
-                        if live["ce_ltp"] > 0:
-                            active_monitor["live_ce_ltp"] = live["ce_ltp"]
-                        if live["pe_ltp"] > 0:
-                            active_monitor["live_pe_ltp"] = live["pe_ltp"]
-                        if live["spot_ltp"] > 0:
-                            active_monitor["live_spot"] = live["spot_ltp"]
+                        live = fetch_live_ltp(sym, cs, ps, exp)
+                        if live["ce_ltp"]   > 0: active_monitor["live_ce_ltp"]  = live["ce_ltp"]
+                        if live["pe_ltp"]   > 0: active_monitor["live_pe_ltp"]  = live["pe_ltp"]
+                        if live["spot_ltp"] > 0: active_monitor["live_spot"]    = live["spot_ltp"]
+
+                # Also refresh index LTP cache every cycle
+                if broker == "kite" and kite_state["access_token"]:
+                    syms = ["NSE:NIFTY 50", "NSE:NIFTY BANK", "NSE:INDIA VIX", "NSE:NIFTY FIN SERVICE"]
+                    kite_get_quotes_by_symbol(syms)
+
             except Exception as e:
                 print(f"[LTP POLL] {e}")
-            time.sleep(5)  # poll every 5 seconds
+            time.sleep(5)
     threading.Thread(target=poll, daemon=True).start()
 
-# ─── AUTO SIGNAL THREAD (replaces manual refresh) ────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  AUTO SIGNAL THREAD
+# ═══════════════════════════════════════════════════════════════════════════════
+
 _auto_signal_running = False
 last_auto_signal_time = None
 
 def auto_signal_loop():
-    """Auto-generate signal every 3 min during market hours when connected"""
     global last_auto_signal_time
     while True:
         try:
             now = datetime.datetime.now()
-            wd = now.weekday()  # 0=Mon, 4=Fri, 5=Sat, 6=Sun
-            h, m = now.hour, now.minute
+            wd = now.weekday(); h, m = now.hour, now.minute
             mins = h * 60 + m
-            market_open = (wd < 5) and (555 <= mins <= 930)  # 9:15 to 15:30
+            market_open = (wd < 5) and (555 <= mins <= 930)
+            broker_ok = active_broker() is not None
 
-            if market_open and upstox_state["connected"] and risk_mgr and not inTrade():
-                # Auto generate every 3 min
+            if market_open and broker_ok and risk_mgr and not inTrade():
                 if not last_auto_signal_time or (time.time() - last_auto_signal_time) >= 180:
                     print(f"[AUTO] Generating signal at {now.strftime('%H:%M')}")
                     try:
@@ -307,66 +605,91 @@ def auto_signal_loop():
                         })
                         last_auto_signal_time = time.time()
                     except Exception as e:
-                        print(f"[AUTO SIGNAL] Error: {e}")
+                        print(f"[AUTO SIGNAL] {e}")
         except Exception as e:
             print(f"[AUTO LOOP] {e}")
-        time.sleep(30)  # check every 30s
+        time.sleep(30)
 
 def inTrade():
     return active_monitor is not None
 
-# ─── FETCH INDICES ────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FETCH INDICES — Kite → Upstox → ScraperAPI
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def fetch_indices():
     c = _cget("idx")
     if c: return c
-    # Try Upstox first for live index values
+
+    result = {}
+
+    # ── Kite (primary) ────────────────────────────────────────────────────────
+    if kite_state["access_token"]:
+        try:
+            sym_map = {
+                "NSE:NIFTY 50":          "NIFTY 50",
+                "NSE:NIFTY BANK":        "NIFTY BANK",
+                "NSE:INDIA VIX":         "INDIA VIX",
+                "NSE:NIFTY FIN SERVICE": "NIFTY FIN SERVICE",
+            }
+            q = kite_get_quotes_by_symbol(list(sym_map.keys()))
+            for ks, name in sym_map.items():
+                if ks in q:
+                    v = q[ks]
+                    prev = v.get("close", v["ltp"])
+                    chg  = round(v["ltp"] - prev, 2) if prev else 0
+                    pchg = round(chg / prev * 100, 2) if prev else 0
+                    result[name] = {
+                        "last": v["ltp"], "open": v["open"], "high": v["high"],
+                        "low": v["low"], "previousClose": prev,
+                        "change": chg, "pChange": pchg, "source": "kite"
+                    }
+            if result:
+                _cset("idx", result); return result
+        except Exception as e:
+            print(f"[INDICES KITE] {e}")
+
+    # ── Upstox (fallback) ─────────────────────────────────────────────────────
     if upstox_state["access_token"]:
         try:
             keys = list(UPSTOX_KEYS.values())
             quotes = upstox_get_quotes(keys)
-            if quotes:
-                r = {}
-                for name, key in UPSTOX_KEYS.items():
-                    if key in quotes:
-                        q = quotes[key]
-                        prev = q.get("close", q.get("ltp", 0))
-                        ltp = q.get("ltp", 0)
-                        chg = round(ltp - prev, 2) if prev else 0
-                        pchg = round(chg / prev * 100, 2) if prev else 0
-                        r[name if name != "SENSEX" else "SENSEX"] = {
-                            "last": ltp, "open": q.get("open", 0),
-                            "high": q.get("high", 0), "low": q.get("low", 0),
-                            "previousClose": prev, "change": chg,
-                            "pChange": pchg, "source": "upstox"
-                        }
-                # Map to standard names
-                result = {}
-                if "NIFTY" in r: result["NIFTY 50"] = r["NIFTY"]
-                if "BANKNIFTY" in r: result["NIFTY BANK"] = r["BANKNIFTY"]
-                if "FINNIFTY" in r: result["NIFTY FIN SERVICE"] = r["FINNIFTY"]
-                if "INDIA VIX" in r: result["INDIA VIX"] = r["INDIA VIX"]
-                if result:
-                    _cset("idx", result)
-                    return result
+            rev = {v: k for k, v in UPSTOX_KEYS.items()}
+            name_map = {"NIFTY": "NIFTY 50", "BANKNIFTY": "NIFTY BANK",
+                        "FINNIFTY": "NIFTY FIN SERVICE", "INDIA VIX": "INDIA VIX"}
+            for key, q in quotes.items():
+                sym = rev.get(key, "")
+                name = name_map.get(sym, sym)
+                prev = q.get("close", q["ltp"])
+                chg  = round(q["ltp"] - prev, 2) if prev else 0
+                pchg = round(chg / prev * 100, 2) if prev else 0
+                result[name] = {
+                    "last": q["ltp"], "open": q["open"], "high": q["high"],
+                    "low": q["low"], "previousClose": prev,
+                    "change": chg, "pChange": pchg, "source": "upstox"
+                }
+            if result:
+                _cset("idx", result); return result
         except Exception as e:
             print(f"[INDICES UPSTOX] {e}")
 
-    # Fallback to ScraperAPI
+    # ── ScraperAPI (last resort) ───────────────────────────────────────────────
     d = nse_get("https://www.nseindia.com/api/allIndices")
     if not d: return {"error": "failed"}
-    r = {}
     for item in d.get("data", []):
         n = item.get("indexSymbol", "")
         if n in {"NIFTY 50", "NIFTY BANK", "INDIA VIX", "NIFTY FIN SERVICE"}:
-            r[n] = {"last": float(item.get("last", 0)), "open": float(item.get("open", 0)),
-                    "high": float(item.get("high", 0)), "low": float(item.get("low", 0)),
-                    "previousClose": float(item.get("previousClose", 0)),
-                    "change": float(item.get("variation", 0)),
-                    "pChange": float(item.get("percentChange", 0)), "source": "scraperapi"}
-    _cset("idx", r)
-    return r
+            result[n] = {
+                "last": float(item.get("last", 0)), "open": float(item.get("open", 0)),
+                "high": float(item.get("high", 0)), "low": float(item.get("low", 0)),
+                "previousClose": float(item.get("previousClose", 0)),
+                "change": float(item.get("variation", 0)),
+                "pChange": float(item.get("percentChange", 0)), "source": "scraperapi"
+            }
+    _cset("idx", result)
+    return result
 
-# ─── FETCH OPTION CHAIN (ScraperAPI — Upstox doesn't have OI) ─
+# ─── FETCH OPTION CHAIN (NSE OI via ScraperAPI, LTP enriched via Kite/Upstox) ─
 def fetch_chain(symbol="NIFTY"):
     k = f"oc_{symbol}"; c = _cget(k)
     if c: return c
@@ -391,52 +714,43 @@ def fetch_chain(symbol="NIFTY"):
             "pe_volume": int(pvol)})
     chain.sort(key=lambda x: x["strike"])
 
-    # Enrich with live Upstox LTP if available
-    if upstox_state["access_token"] and nearest:
+    # ── Enrich ATM ±5 strikes with live LTP (Kite first, Upstox fallback) ─────
+    broker = active_broker()
+    if broker and nearest:
         try:
-            # Get ATM ±5 strikes live LTP from Upstox
             nearby = [c for c in chain if abs(c["strike"] - atm) <= 5 * step]
-            ce_keys = [upstox_key_for_option(symbol, c["strike"], "CE", nearest) for c in nearby]
-            pe_keys = [upstox_key_for_option(symbol, c["strike"], "PE", nearest) for c in nearby]
-            all_keys = [k for k in ce_keys + pe_keys if k]
-            if all_keys:
-                live = upstox_get_ltp(all_keys)
-                for c in chain:
-                    ck = upstox_key_for_option(symbol, c["strike"], "CE", nearest)
-                    pk = upstox_key_for_option(symbol, c["strike"], "PE", nearest)
-                    if ck and ck in live and live[ck]["ltp"] > 0:
-                        c["ce_ltp"] = live[ck]["ltp"]; c["ce_source"] = "upstox"
-                    if pk and pk in live and live[pk]["ltp"] > 0:
-                        c["pe_ltp"] = live[pk]["ltp"]; c["pe_source"] = "upstox"
-                print(f"[CHAIN] Enriched {len(live)} strikes with Upstox live LTP")
+            enriched = 0
+            for row in nearby:
+                ce_ltp = get_option_ltp(symbol, row["strike"], "CE", nearest)
+                pe_ltp = get_option_ltp(symbol, row["strike"], "PE", nearest)
+                if ce_ltp > 0: row["ce_ltp"] = ce_ltp; row["ce_source"] = broker
+                if pe_ltp > 0: row["pe_ltp"] = pe_ltp; row["pe_source"] = broker
+                enriched += 1
+            print(f"[CHAIN] Enriched {enriched} strikes via {broker}")
         except Exception as e:
-            print(f"[CHAIN UPSTOX] {e}")
+            print(f"[CHAIN ENRICH] {e}")
 
-    # Also get live spot from Upstox if available
-    if upstox_state["access_token"]:
-        try:
-            idx_key = UPSTOX_KEYS.get(symbol)
-            if idx_key:
-                q = upstox_get_ltp([idx_key])
-                if idx_key in q and q[idx_key]["ltp"] > 0:
-                    spot = q[idx_key]["ltp"]
-                    atm = round(spot / step) * step
-        except: pass
+    # Live spot from Kite/Upstox
+    live_spot = get_index_ltp("NIFTY 50" if symbol == "NIFTY" else
+                               "NIFTY BANK" if symbol == "BANKNIFTY" else
+                               "NIFTY FIN SERVICE")
+    if live_spot > 0:
+        spot = live_spot; atm = round(spot / step) * step
 
     pcr = round(tcp / tco, 2) if tco > 0 else 1.0
-    oi_sorted = sorted(chain, key=lambda x: x["ce_oi"] + x["pe_oi"], reverse=True)
     high_oi_ce = sorted(chain, key=lambda x: x["ce_oi"], reverse=True)[:3]
     high_oi_pe = sorted(chain, key=lambda x: x["pe_oi"], reverse=True)[:3]
     res_strikes = [c for c in high_oi_ce if c["strike"] >= atm]
     sup_strikes = [c for c in high_oi_pe if c["strike"] <= atm]
-    mp = _calc_max_pain(chain)
 
-    result = {"spot": spot, "atm_strike": atm, "expiry": nearest,
-              "pcr": pcr, "max_pain": mp, "chain": chain,
-              "total_ce_oi": int(tco), "total_pe_oi": int(tcp),
-              "resistance_strikes": res_strikes[:3], "support_strikes": sup_strikes[:3],
-              "iv_skew": _calc_iv_skew(chain, atm),
-              "data_source": "nse_oi+upstox_ltp" if upstox_state["access_token"] else "scraperapi"}
+    result = {
+        "spot": spot, "atm_strike": atm, "expiry": nearest,
+        "pcr": pcr, "max_pain": _calc_max_pain(chain), "chain": chain,
+        "total_ce_oi": int(tco), "total_pe_oi": int(tcp),
+        "resistance_strikes": res_strikes[:3], "support_strikes": sup_strikes[:3],
+        "iv_skew": _calc_iv_skew(chain, atm),
+        "data_source": f"nse_oi+{broker or 'scraperapi'}_ltp"
+    }
     _cset(k, result)
     return result
 
@@ -451,10 +765,9 @@ def _calc_max_pain(chain):
 def _calc_iv_skew(chain, atm):
     atm_c = next((c for c in chain if c["strike"] == atm), None)
     if not atm_c: return 0
-    ce_iv = atm_c.get("ce_iv", 0); pe_iv = atm_c.get("pe_iv", 0)
-    return round(pe_iv - ce_iv, 2)
+    return round(atm_c.get("pe_iv", 0) - atm_c.get("ce_iv", 0), 2)
 
-# ─── FETCH FII/DII ────────────────────────────
+# ─── FETCH FII/DII ────────────────────────────────────────────────────────────
 def fetch_fii():
     c = _cget("fii")
     if c: return c
@@ -471,7 +784,10 @@ def fetch_fii():
     _cset("fii", result)
     return result
 
-# ─── SIGNAL ENGINES (8 total) ────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  SIGNAL ENGINES (8 total — unchanged logic)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def engine_trend(idx, oc):
     n = idx.get("NIFTY 50", {}); sc = 0; rs = []
     spot = oc.get("spot", 0); o = n.get("open", 0); h = n.get("high", 0); l = n.get("low", 0)
@@ -589,9 +905,9 @@ def engine_flow(oc):
     pa = sum(c.get("pe_oi_change", 0) for c in near if c.get("pe_oi_change", 0) > 0)
     cu = abs(sum(c.get("ce_oi_change", 0) for c in near if c.get("ce_oi_change", 0) < 0))
     pu = abs(sum(c.get("pe_oi_change", 0) for c in near if c.get("pe_oi_change", 0) < 0))
-    if pa > ca * 1.5:  sc += 25; rs.append(f"PE OI building faster — put writing, bulls in control")
-    elif ca > pa * 1.5: sc -= 25; rs.append(f"CE OI building faster — call writing, bears in control")
-    if pu > pa * 1.2 and cu < pu:  sc -= 20; rs.append("PE OI unwinding — bears covering, caution")
+    if pa > ca * 1.5:  sc += 25; rs.append("PE OI building faster — put writing, bulls in control")
+    elif ca > pa * 1.5: sc -= 25; rs.append("CE OI building faster — call writing, bears in control")
+    if pu > pa * 1.2 and cu < pu: sc -= 20; rs.append("PE OI unwinding — bears covering, caution")
     elif cu > ca * 1.2 and pu < cu: sc += 20; rs.append("CE OI unwinding — bears covering, bullish signal")
     ocv = sum(c.get("ce_volume", 0) for c in near if c["strike"] > atm + step)
     opv = sum(c.get("pe_volume", 0) for c in near if c["strike"] < atm - step)
@@ -603,7 +919,6 @@ def engine_flow(oc):
     return {"name": "Flow", "score": round(sc, 1), "signal": "BULL" if sc > 15 else "BEAR" if sc < -15 else "NEUTRAL",
             "confidence": min(95, abs(sc)), "reasons": rs, "data": {"ce_add": ca, "pe_add": pa}}
 
-# ─── NEWS ENGINE ──────────────────────────────
 NEWS_SIGNALS = {
     "rate cut": 80, "repo cut": 80, "rate reduce": 80, "stimulus": 70, "gdp growth": 65,
     "gdp beat": 65, "inflation ease": 60, "cpi lower": 60, "surplus": 55, "buyback": 55,
@@ -703,7 +1018,7 @@ def generate_signal(snapshot):
                             "supports": [c["strike"] for c in oc.get("support_strikes", [])]},
             "chain": oc.get("chain", [])}
 
-# ─── CAPITAL MANAGER ─────────────────────────
+# ─── CAPITAL MANAGER ──────────────────────────────────────────────────────────
 LOT_SIZES = {"NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65}
 MARGINS   = {"NIFTY": 6500, "BANKNIFTY": 11000, "FINNIFTY": 6000}
 SL_PCT    = 0.40
@@ -717,7 +1032,7 @@ class CapMgr:
         self.avail = self.total; self.in_trade = 0.0; self.peak = self.total
         self.ses_trades = self.ses_pnl = self.ses_wins = self.ses_loss = self.consec = 0
         self.date = datetime.date.today(); self.log = []
-        self._last_cfg = cfg  # remember for auto-signal
+        self._last_cfg = cfg
 
     def _chk_day(self):
         if datetime.date.today() != self.date:
@@ -740,20 +1055,21 @@ class CapMgr:
         chain = sig.get("chain", []); exp = sig.get("market_data", {}).get("expiry", "")
         ls = LOT_SIZES.get(sym, 75); mg = MARGINS.get(sym, 6500)
 
-        # Get live LTP from Upstox if available, else use OI chain LTP
         cp = pp = 0
-        upstox_source = False
+        live_source = "nse_chain"
 
-        if upstox_state["access_token"] and exp:
+        # Try live LTP (Kite first, Upstox fallback)
+        broker = active_broker()
+        if broker and exp:
             try:
-                live = fetch_live_ltp_upstox(sym,
+                live = fetch_live_ltp(sym,
                     atm if "CE" in action else None,
                     atm if "PE" in action else None, exp)
-                if live["ce_ltp"] > 0: cp = live["ce_ltp"]; upstox_source = True
-                if live["pe_ltp"] > 0: pp = live["pe_ltp"]; upstox_source = True
+                if live["ce_ltp"] > 0: cp = live["ce_ltp"]; live_source = f"{broker}_live"
+                if live["pe_ltp"] > 0: pp = live["pe_ltp"]; live_source = f"{broker}_live"
             except: pass
 
-        # Fallback to chain data
+        # Fallback to chain
         if cp == 0 or pp == 0:
             for c in chain:
                 if c["strike"] == atm:
@@ -782,7 +1098,7 @@ class CapMgr:
                 "max_loss": int(lots * pr * ls * SL_PCT * mult),
                 "target_pnl": int(lots * pr * ls * SL_PCT * mult * self.rr),
                 "risk_reduced": rm < 1.0, "spot": spot, "atm": atm,
-                "ltp_source": "upstox_live" if upstox_source else "nse_chain"}
+                "ltp_source": live_source}
 
     def record(self, pnl):
         self.ses_trades += 1; self.ses_pnl += pnl; self.avail += pnl; self.in_trade = 0
@@ -801,7 +1117,7 @@ class CapMgr:
                 "daily_loss_used_pct": dlp, "trades_left_today": max(0, self.max_trades - self.ses_trades),
                 "max_trades_day": self.max_trades}
 
-# ─── DATABASE ────────────────────────────────
+# ─── DATABASE ─────────────────────────────────────────────────────────────────
 def init_db():
     c = sqlite3.connect(DB_PATH); cur = c.cursor()
     cur.executescript("""
@@ -847,13 +1163,13 @@ def get_history():
         return trades, pd
     except: return [], {}
 
-# ─── GLOBAL STATE ─────────────────────────────
+# ─── GLOBAL STATE ─────────────────────────────────────────────────────────────
 risk_mgr = None; active_monitor = None; active_tid = None
 last_signal = None; last_pos = None; last_generated_signal = None
 
 init_db()
 
-# ─── BACKGROUND THREADS ───────────────────────
+# ─── BACKGROUND THREADS ───────────────────────────────────────────────────────
 def self_ping():
     time.sleep(30)
     while True:
@@ -864,13 +1180,21 @@ def self_ping():
 threading.Thread(target=self_ping, daemon=True).start()
 threading.Thread(target=auto_signal_loop, daemon=True).start()
 
-# Start LTP polling if token already set (pre-set via env var)
+# Auto-connect if tokens pre-set via env vars
+if kite_state["access_token"]:
+    kite_state["connected"] = True
+    start_ltp_polling()
+    threading.Thread(target=start_kite_ws, daemon=True).start()
+    print("[KITE] Pre-set token found — connecting WS")
+
 if upstox_state["access_token"]:
     upstox_state["connected"] = True
-    start_ltp_polling()
+    if not kite_state["connected"]:
+        start_ltp_polling()
     threading.Thread(target=start_upstox_ws, daemon=True).start()
+    print("[UPSTOX] Pre-set token found — connecting WS (fallback)")
 
-# ─── SHARED SIGNAL GENERATOR ─────────────────
+# ─── SHARED SIGNAL GENERATOR ─────────────────────────────────────────────────
 def _do_generate_signal(cfg):
     global last_generated_signal, last_pos, last_signal
     sym = cfg.get("symbol", "NIFTY")
@@ -897,113 +1221,221 @@ def _do_generate_signal(cfg):
 
     return sig, pos, ct, None
 
-# ─── ROUTES ──────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  FLASK ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @app.route("/")
 def root():
-    return jsonify({"status": "alive", "version": "2.0", "service": "QUANTRA BEAST",
-                    "upstox_connected": upstox_state["connected"],
-                    "upstox_ws": upstox_state["ws_connected"],
-                    "time": str(datetime.datetime.now())})
+    broker = active_broker()
+    return jsonify({
+        "status": "alive", "version": "3.0", "service": "QUANTRA BEAST",
+        "active_broker": broker or "none",
+        "kite_connected":   kite_state["connected"],
+        "kite_ws":          kite_state["ws_connected"],
+        "upstox_connected": upstox_state["connected"],
+        "upstox_ws":        upstox_state["ws_connected"],
+        "time": str(datetime.datetime.now())
+    })
 
 @app.route("/ping")
 def ping():
-    return jsonify({"status": "alive", "version": "2.0",
-                    "upstox": upstox_state["connected"],
+    return jsonify({"status": "alive", "version": "3.0",
+                    "active_broker": active_broker() or "none",
                     "time": str(datetime.datetime.now())})
 
-# ─── UPSTOX AUTH ROUTES ───────────────────────
-@app.route("/upstox/login-url")
-def upstox_login():
-    """Frontend calls this to get the OAuth URL"""
-    if not UPSTOX_API_KEY:
-        return jsonify({"error": "UPSTOX_API_KEY not configured in environment"}), 400
-    url = upstox_login_url()
+# ═══════════════════════════════════════════════════════════════════════════════
+#  KITE AUTH ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/kite/login-url")
+def kite_login():
+    """Frontend calls this to get Kite OAuth URL"""
+    if not KITE_API_KEY:
+        return jsonify({"error": "KITE_API_KEY not set in Render environment variables"}), 400
     return jsonify({
-        "login_url": url,
-        "instructions": "Open this URL in browser, login with Upstox, then you'll be redirected back automatically",
-        "redirect_uri": UPSTOX_REDIRECT
+        "login_url": kite_login_url(),
+        "instructions": "Open this URL, login with Zerodha credentials, you'll be redirected back automatically",
+        "redirect_uri": KITE_REDIRECT
     })
 
-@app.route("/upstox/callback")
-def upstox_callback():
-    """Upstox redirects here after login with auth code"""
-    code = request.args.get("code")
-    error = request.args.get("error")
-    if error:
+@app.route("/kite/callback")
+def kite_callback():
+    """Zerodha redirects here after login with request_token"""
+    request_token = request.args.get("request_token")
+    status = request.args.get("status", "")
+    if status != "success" or not request_token:
+        err = request.args.get("message", "Login failed or cancelled")
         return f"""<html><body style='background:#020b08;color:#ff3355;font-family:monospace;
             display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'>
             <div><div style='font-size:36px'>❌</div>
-            <div style='font-size:18px;margin:10px'>Upstox returned error:</div>
-            <div style='font-size:14px;color:#ff6677'>{error}: {request.args.get('error_description','')}</div>
+            <div style='font-size:18px;margin:10px'>Kite login failed</div>
+            <div style='font-size:13px;color:#ff6677'>{err}</div>
             </div></body></html>""", 400
-    if not code:
-        return "<h2 style='color:red;font-family:monospace'>No auth code received from Upstox</h2>", 400
-    success, result = upstox_exchange_token(code)
+
+    success, result = kite_exchange_token(request_token)
     if success:
         start_ltp_polling()
         return """<html><body style='background:#020b08;color:#00ff88;font-family:Share Tech Mono,monospace;
             display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'>
             <div>
             <div style='font-size:48px;margin-bottom:20px'>✅</div>
-            <div style='font-size:24px;letter-spacing:3px;margin-bottom:10px'>UPSTOX CONNECTED</div>
-            <div style='color:#5a8a7a;font-size:12px'>Live LTP streaming active — you can close this tab</div>
+            <div style='font-size:28px;letter-spacing:3px;margin-bottom:10px'>KITE CONNECTED</div>
+            <div style='color:#00cc66;font-size:14px;margin-bottom:6px'>Live LTP streaming active (primary broker)</div>
+            <div style='color:#5a8a7a;font-size:12px'>WebSocket started — you can close this tab</div>
             <div style='color:#5a8a7a;font-size:11px;margin-top:10px'>Return to QUANTRA BEAST dashboard</div>
             </div></body></html>"""
     else:
         return f"""<html><body style='background:#020b08;color:#ff3355;font-family:monospace;
             display:flex;align-items:center;justify-content:center;height:100vh;text-align:center;padding:20px'>
             <div><div style='font-size:36px'>❌</div>
-            <div style='font-size:18px;margin:10px'>Auth Failed</div>
+            <div style='font-size:18px;margin:10px'>Kite Auth Failed</div>
             <div style='font-size:12px;color:#ff6677;max-width:500px;word-break:break-all'>{result}</div>
-            <div style='font-size:11px;color:#884444;margin-top:15px'>Check Render logs for details.<br>
-            API Key: {UPSTOX_API_KEY[:8]}... | Redirect: {UPSTOX_REDIRECT}</div>
+            <div style='font-size:11px;color:#884444;margin-top:15px'>
+            API Key: {KITE_API_KEY[:8] if KITE_API_KEY else 'NOT SET'}... | Redirect: {KITE_REDIRECT}</div>
             </div></body></html>""", 400
 
-@app.route("/upstox/set-token", methods=["POST"])
-def upstox_set_token():
-    """Manually set access token (paste it directly)"""
+@app.route("/kite/set-token", methods=["POST"])
+def kite_set_token():
+    """Manually paste access_token (daily reset workaround)"""
     b = request.get_json(force=True) or {}
     token = b.get("access_token", "")
     if not token:
-        return jsonify({"error": "No token provided"}), 400
-    upstox_state["access_token"] = token
-    upstox_state["connected"] = True
-    upstox_state["last_token_time"] = datetime.datetime.now().isoformat()
-    upstox_state["error"] = None
+        return jsonify({"error": "No access_token provided"}), 400
+    kite_state["access_token"]    = token
+    kite_state["connected"]        = True
+    kite_state["last_token_time"]  = datetime.datetime.now().isoformat()
+    kite_state["error"]            = None
     start_ltp_polling()
+    threading.Thread(target=start_kite_ws, daemon=True).start()
+    return jsonify({"message": "Kite token set successfully", "connected": True,
+                    "broker": "kite (primary)"})
+
+@app.route("/kite/status")
+def kite_status():
+    return jsonify({
+        "connected":        kite_state["connected"],
+        "ws_connected":     kite_state["ws_connected"],
+        "last_token_time":  kite_state["last_token_time"],
+        "ltp_tokens_cached": len(kite_state["ltp_cache"]),
+        "error":            kite_state["error"],
+        "has_token":        bool(kite_state["access_token"]),
+        "login_url":        kite_login_url() if KITE_API_KEY else None,
+        "role":             "PRIMARY"
+    })
+
+@app.route("/kite/ltp")
+def kite_ltp_route():
+    """Get live LTP for index tokens"""
+    raw = request.args.get("tokens", "")
+    if not raw:
+        return jsonify({"error": "Provide ?tokens=256265,260105"})
+    tokens = [int(t.strip()) for t in raw.split(",") if t.strip().isdigit()]
+    result = kite_get_ltp(tokens)
+    return jsonify({"ltp": result, "kite_connected": kite_state["connected"]})
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  UPSTOX AUTH ROUTES (FALLBACK)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@app.route("/upstox/login-url")
+def upstox_login():
+    if not UPSTOX_API_KEY:
+        return jsonify({"error": "UPSTOX_API_KEY not configured"}), 400
+    return jsonify({
+        "login_url": upstox_login_url(),
+        "instructions": "Fallback broker. Use only if Kite is unavailable.",
+        "redirect_uri": UPSTOX_REDIRECT,
+        "role": "FALLBACK"
+    })
+
+@app.route("/upstox/callback")
+def upstox_callback():
+    code = request.args.get("code")
+    error = request.args.get("error")
+    if error:
+        return f"<h2 style='color:red'>Upstox error: {error}</h2>", 400
+    if not code:
+        return "<h2 style='color:red'>No auth code</h2>", 400
+    success, result = upstox_exchange_token(code)
+    if success:
+        if not kite_state["connected"]:
+            start_ltp_polling()
+        return """<html><body style='background:#020b08;color:#ffaa00;font-family:monospace;
+            display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'>
+            <div>
+            <div style='font-size:48px;margin-bottom:20px'>✅</div>
+            <div style='font-size:24px;letter-spacing:3px'>UPSTOX CONNECTED (FALLBACK)</div>
+            <div style='color:#aa8800;font-size:12px;margin-top:10px'>
+            Active as fallback — connect Kite for better performance</div>
+            </div></body></html>"""
+    return f"<h2 style='color:red'>Upstox auth failed: {result}</h2>", 400
+
+@app.route("/upstox/set-token", methods=["POST"])
+def upstox_set_token():
+    b = request.get_json(force=True) or {}
+    token = b.get("access_token", "")
+    if not token: return jsonify({"error": "No token"}), 400
+    upstox_state["access_token"]    = token
+    upstox_state["connected"]        = True
+    upstox_state["last_token_time"]  = datetime.datetime.now().isoformat()
+    upstox_state["error"]            = None
+    if not kite_state["connected"]:
+        start_ltp_polling()
     threading.Thread(target=start_upstox_ws, daemon=True).start()
-    return jsonify({"message": "Token set successfully", "connected": True})
+    return jsonify({"message": "Upstox token set (fallback)", "connected": True})
 
 @app.route("/upstox/status")
 def upstox_status():
     return jsonify({
-        "connected": upstox_state["connected"],
-        "ws_connected": upstox_state["ws_connected"],
-        "last_token_time": upstox_state["last_token_time"],
+        "connected":         upstox_state["connected"],
+        "ws_connected":      upstox_state["ws_connected"],
+        "last_token_time":   upstox_state["last_token_time"],
         "ltp_symbols_cached": len(upstox_state["ltp_cache"]),
-        "error": upstox_state["error"],
-        "has_token": bool(upstox_state["access_token"]),
-        "login_url": upstox_login_url() if UPSTOX_API_KEY else None
+        "error":             upstox_state["error"],
+        "has_token":         bool(upstox_state["access_token"]),
+        "login_url":         upstox_login_url() if UPSTOX_API_KEY else None,
+        "role":              "FALLBACK"
     })
 
-@app.route("/upstox/ltp")
-def upstox_ltp_route():
-    """Get live LTP for any symbol"""
-    keys = request.args.get("keys", "").split(",")
-    if not keys or not keys[0]:
-        return jsonify({"error": "Provide ?keys=NSE_INDEX|Nifty 50,..."})
-    result = upstox_get_ltp([k.strip() for k in keys if k.strip()])
-    return jsonify({"ltp": result, "upstox_connected": upstox_state["connected"]})
+# ═══════════════════════════════════════════════════════════════════════════════
+#  BROKER STATUS COMBINED
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# ─── MAIN SIGNAL ROUTE ────────────────────────
+@app.route("/broker/status")
+def broker_status():
+    """Combined broker status — one call for the dashboard"""
+    return jsonify({
+        "active_broker": active_broker() or "none",
+        "kite": {
+            "connected":    kite_state["connected"],
+            "ws_connected": kite_state["ws_connected"],
+            "has_token":    bool(kite_state["access_token"]),
+            "role":         "PRIMARY",
+            "login_url":    kite_login_url() if KITE_API_KEY else None,
+            "error":        kite_state["error"],
+        },
+        "upstox": {
+            "connected":    upstox_state["connected"],
+            "ws_connected": upstox_state["ws_connected"],
+            "has_token":    bool(upstox_state["access_token"]),
+            "role":         "FALLBACK",
+            "login_url":    upstox_login_url() if UPSTOX_API_KEY else None,
+            "error":        upstox_state["error"],
+        }
+    })
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MAIN SIGNAL + TRADE ROUTES (unchanged logic, updated broker references)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @app.route("/generate-signal", methods=["POST"])
 def gen_signal():
     global risk_mgr
     b = request.get_json(force=True) or {}
     sym = b.get("symbol", "NIFTY").upper()
     cfg = {"total_capital": b.get("capital", 50000), "risk_per_trade": b.get("risk_pct", 2.0),
-           "rr_ratio": b.get("rr_ratio", 2.0), "max_trades_day": b.get("max_trades", 3),
-           "symbol": sym}
+           "rr_ratio": b.get("rr_ratio", 2.0), "max_trades_day": b.get("max_trades", 3), "symbol": sym}
     if risk_mgr is None:
         risk_mgr = CapMgr(cfg)
     else:
@@ -1013,11 +1445,11 @@ def gen_signal():
     if err: return jsonify(err), 503
 
     idx = fetch_indices(); oc = fetch_chain(sym); fii = fetch_fii()
-    na = {"news_sentiment_score":0,"bull_count":0,"bear_count":0,"impactful_news":[]}
+    na = {"news_sentiment_score": 0, "bull_count": 0, "bear_count": 0, "impactful_news": []}
     try:
         nd = nse_get("https://www.nseindia.com/api/corporate-announcements?index=equities")
         if nd and isinstance(nd, list):
-            news_raw = [{"title": x.get("subject",""),"company": x.get("symbol",""),
+            news_raw = [{"title": x.get("subject",""), "company": x.get("symbol",""),
                          "time": x.get("an_dt","")} for x in nd[:30]]
             na = analyze_news_impact(news_raw)
     except: pass
@@ -1027,17 +1459,18 @@ def gen_signal():
                     "chain": oc.get("chain", []),
                     "option_meta": {k: v for k, v in oc.items() if k != "chain"},
                     "news_analysis": na,
+                    "active_broker": active_broker() or "none",
+                    "kite_connected": kite_state["connected"],
                     "upstox_connected": upstox_state["connected"],
                     "data_source": oc.get("data_source", "scraperapi")})
 
 @app.route("/latest-signal")
 def latest_signal():
-    """Dashboard polls this every 30s to get auto-generated signal without triggering new fetch"""
     if not last_generated_signal:
         return jsonify({"signal": None, "message": "No signal generated yet"})
     return jsonify({"signal": last_generated_signal, "position": last_pos,
                     "capital": risk_mgr.status() if risk_mgr else None,
-                    "upstox_connected": upstox_state["connected"],
+                    "active_broker": active_broker() or "none",
                     "auto_generated": True,
                     "ts": datetime.datetime.now().isoformat()})
 
@@ -1054,9 +1487,10 @@ def trade_enter():
     active_monitor = {"trade": pos, "entry": datetime.datetime.now(),
                       "trailing": False, "partial": False,
                       "live_ce_ltp": 0, "live_pe_ltp": 0, "live_spot": 0}
-    start_ltp_polling()  # ensure polling is running
+    start_ltp_polling()
     return jsonify({"trade_id": tid, "message": "Trade recorded",
-                    "ltp_source": pos.get("ltp_source", "nse_chain")})
+                    "ltp_source": pos.get("ltp_source", "nse_chain"),
+                    "active_broker": active_broker() or "none"})
 
 @app.route("/trade/monitor")
 def trade_monitor():
@@ -1068,10 +1502,9 @@ def trade_monitor():
     ce_tgt = pos.get("ce_target", 0); pe_tgt = pos.get("pe_target", 0)
     max_loss = pos.get("max_loss", 0); tpnl = pos.get("target_pnl", 0)
 
-    # Use live Upstox LTP if available, else fall back to chain
     ce_s = active_monitor.get("live_ce_ltp", 0)
     pe_s = active_monitor.get("live_pe_ltp", 0)
-    ltp_source = "upstox_live"
+    ltp_source = active_broker() + "_live" if active_broker() else "nse_chain"
 
     if ce_s == 0 or pe_s == 0:
         ltp_source = "nse_chain"
@@ -1136,10 +1569,8 @@ def capital():
 def cap_reset():
     global risk_mgr
     b = request.get_json(force=True) or {}
-    risk_mgr = CapMgr({"total_capital": b.get("capital", 50000),
-                        "risk_per_trade": b.get("risk_pct", 2.0),
-                        "rr_ratio": b.get("rr_ratio", 2.0),
-                        "max_trades_day": b.get("max_trades", 3)})
+    risk_mgr = CapMgr({"total_capital": b.get("capital", 50000), "risk_per_trade": b.get("risk_pct", 2.0),
+                        "rr_ratio": b.get("rr_ratio", 2.0), "max_trades_day": b.get("max_trades", 3)})
     return jsonify({"message": "Reset", "capital": risk_mgr.status()})
 
 @app.route("/history")
@@ -1152,31 +1583,29 @@ def gift_nifty():
     c = _cget("gift")
     if c: return jsonify(c)
     gift = {}
-    # Try Upstox first
-    if upstox_state["access_token"]:
+    # Try Kite first
+    if kite_state["access_token"]:
+        try:
+            ltp = get_index_ltp("NIFTY 50")
+            if ltp > 0:
+                gift = {"last": ltp, "change": 0, "pChange": 0,
+                        "market": "GIFT NIFTY", "note": "Live via Kite", "source": "kite"}
+        except: pass
+    # Upstox fallback
+    if not gift and upstox_state["access_token"]:
         try:
             q = upstox_get_ltp(["NSE_INDEX|Nifty 50"])
             if "NSE_INDEX|Nifty 50" in q:
                 ltp = q["NSE_INDEX|Nifty 50"]["ltp"]
-                gift = {"last": ltp, "change": 0, "pChange": 0, "market": "GIFT NIFTY",
-                        "note": "Live via Upstox", "source": "upstox"}
+                gift = {"last": ltp, "change": 0, "pChange": 0,
+                        "market": "GIFT NIFTY", "note": "Live via Upstox", "source": "upstox"}
         except: pass
-    # Fallback NSE
     if not gift:
-        d = nse_get("https://www.nseindia.com/api/marketStatus")
-        if d:
-            for m in d.get("marketState", []):
-                if "GIFT" in m.get("market", "").upper() or "SGX" in m.get("market", "").upper():
-                    gift = {"last": m.get("last", 0), "change": m.get("change", 0),
-                            "pChange": m.get("percentChange", 0), "market": m.get("market", ""),
-                            "source": "nse"}
-                    break
-        if not gift:
-            idx = _cget("idx") or {}
-            n = idx.get("NIFTY 50", {})
-            gift = {"last": n.get("last", 0), "change": n.get("change", 0),
-                    "pChange": n.get("pChange", 0), "market": "GIFT NIFTY (approx)",
-                    "note": "Showing NIFTY spot as proxy", "source": "nse_approx"}
+        idx = _cget("idx") or {}
+        n = idx.get("NIFTY 50", {})
+        gift = {"last": n.get("last", 0), "change": n.get("change", 0),
+                "pChange": n.get("pChange", 0), "market": "GIFT NIFTY (approx)",
+                "note": "Showing NIFTY spot as proxy", "source": "nse_approx"}
     _cset("gift", gift)
     return jsonify(gift)
 
