@@ -23,11 +23,9 @@ import time, datetime, threading, os, uuid, json
 app  = Flask(__name__)
 CORS(app)
 
-# ── Env config ───────────────────────────────────────────
 DB_PATH  = os.environ.get("DB_PATH", "/tmp/quantra.db")
 OWN_URL  = os.environ.get("RENDER_EXTERNAL_URL", "https://quantra-beast.onrender.com")
 
-# ── Module imports ───────────────────────────────────────
 from core.cache         import _cget, _cset
 from core.kite_client   import (
     KITE_API_KEY, KITE_INDEX_TOKENS, TOKEN_TO_NAME,
@@ -51,7 +49,6 @@ from database.db import (
     get_performance_summary,
 )
 
-# ── Kite state (single shared dict) ─────────────────────
 kite = {
     "access_token":    os.environ.get("KITE_ACCESS_TOKEN", ""),
     "connected":       False,
@@ -66,24 +63,20 @@ kite = {
     "last_tick_ts":    None,
 }
 
-# ── Global app state ─────────────────────────────────────
-risk_mgr:       RiskManager | None = None
-active_monitor: dict | None        = None   # None = not in trade
-last_signal:    dict | None        = None
-last_auto_signal_time              = None
-_ltp_poll_running                  = False
+risk_mgr       = None
+active_monitor = None
+last_signal    = None
+last_auto_signal_time = None
+_ltp_poll_running     = False
 
 WEIGHTS = {
     "trend": 0.16, "options": 0.18, "gamma": 0.11, "volatility": 0.09,
     "regime": 0.07, "sentiment": 0.14, "flow": 0.15, "news": 0.10,
 }
 
-# ── Init DB ──────────────────────────────────────────────
 init_db()
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  BACKGROUND THREADS
-# ════════════════════════════════════════════════════════════════════════════════
+# ── BACKGROUND THREADS ───────────────────────────────────
 
 def _start_kite_ws_thread():
     threading.Thread(target=start_kite_ws, args=(kite,), daemon=True).start()
@@ -128,10 +121,10 @@ def auto_signal_loop():
                     print(f"[AUTO] Signal at {now.strftime('%H:%M')}")
                     try:
                         cfg = risk_mgr._last_cfg or {
-                            "symbol":    "NIFTY",
-                            "capital":   risk_mgr.total,
-                            "risk_pct":  risk_mgr.risk_pct,
-                            "rr_ratio":  risk_mgr.rr,
+                            "symbol":     "NIFTY",
+                            "capital":    risk_mgr.total,
+                            "risk_pct":   risk_mgr.risk_pct,
+                            "rr_ratio":   risk_mgr.rr,
                             "max_trades": risk_mgr.max_trades,
                         }
                         _do_generate_signal(cfg)
@@ -144,20 +137,15 @@ def auto_signal_loop():
 
 threading.Thread(target=auto_signal_loop, daemon=True).start()
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  SIGNAL GENERATION
-# ════════════════════════════════════════════════════════════════════════════════
+# ── SIGNAL GENERATION ────────────────────────────────────
 
-def _fetch_news_score(symbol: str) -> tuple[float, list]:
-    """Lightweight news fetch — returns (score, headlines)."""
+def _fetch_news_score(symbol):
     try:
         from core.data_fetcher import nse_get
         data = nse_get("https://www.nseindia.com/api/market-news")
         if data:
             headlines = [item.get("description", "") for item in
-                         (data if isinstance(data, list)
-                          else data.get("data", []))[:5]]
-            # Simple sentiment: count positive/negative keywords
+                         (data if isinstance(data, list) else data.get("data", []))[:5]]
             pos_kw = ["rally", "surge", "gain", "bull", "positive", "up", "high", "record"]
             neg_kw = ["fall", "crash", "drop", "bear", "negative", "down", "low", "sell"]
             score = 0
@@ -170,7 +158,7 @@ def _fetch_news_score(symbol: str) -> tuple[float, list]:
         pass
     return 0, []
 
-def _do_generate_signal(cfg: dict) -> dict:
+def _do_generate_signal(cfg):
     global last_signal
     symbol = cfg.get("symbol", "NIFTY")
 
@@ -180,7 +168,7 @@ def _do_generate_signal(cfg: dict) -> dict:
     news_score, headlines = _fetch_news_score(symbol)
 
     if not option_data.get("chain"):
-        print(f"[SIGNAL] Warning: empty chain for {symbol}, proceeding with degraded data")
+        print(f"[SIGNAL] Warning: empty chain for {symbol}")
 
     snapshot = {
         "symbol":      symbol,
@@ -192,14 +180,12 @@ def _do_generate_signal(cfg: dict) -> dict:
     signal = fusion_generate(snapshot, weights=WEIGHTS, news_score=news_score)
     signal["headlines"] = headlines
 
-    # Strike selection
     if signal["action"] != "WAIT" and option_data.get("chain"):
-        vix = indices.get("INDIA VIX", {}).get("last", 15)
+        vix     = indices.get("INDIA VIX", {}).get("last", 15)
         strikes = select_strike(signal, option_data, signal["action"], vix=vix)
         signal["ce_strike"] = strikes.get("ce_strike")
         signal["pe_strike"] = strikes.get("pe_strike")
 
-    # Capital check
     if risk_mgr:
         can = risk_mgr.can_trade()
         if not can["allowed"] and signal["action"] != "WAIT":
@@ -217,13 +203,11 @@ def _do_generate_signal(cfg: dict) -> dict:
     return signal
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ROUTES — KITE AUTH
-# ════════════════════════════════════════════════════════════════════════════════
+# ── ROUTES — PING & KITE AUTH ────────────────────────────
 
 @app.route("/ping")
 def ping():
-    return jsonify({"status": "ok", "ts": time.time(), "version": "4.0-modular"})
+    return jsonify({"status": "alive", "ts": time.time(), "version": "4.0-modular"})
 
 @app.route("/kite/status")
 def kite_status():
@@ -250,11 +234,9 @@ def kite_callback():
     rt = request.args.get("request_token")
     if not rt:
         return "<h2>❌ No request_token</h2>", 400
-
     def on_success():
         _start_kite_ws_thread()
         start_ltp_polling()
-
     ok, val = kite_exchange_token(rt, kite, on_success_callback=on_success)
     if ok:
         return f"<h2>✅ Connected as {kite['profile'].get('user_name','')}</h2>"
@@ -262,7 +244,7 @@ def kite_callback():
 
 @app.route("/kite/set-token", methods=["POST"])
 def kite_set_token():
-    data = request.get_json(force=True) or {}
+    data  = request.get_json(force=True) or {}
     token = data.get("access_token", "")
     if not token:
         return jsonify({"error": "access_token required"}), 400
@@ -280,15 +262,11 @@ def kite_logout():
     return jsonify({"status": "logged_out"})
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ROUTES — KITE DATA
-# ════════════════════════════════════════════════════════════════════════════════
+# ── ROUTES — KITE DATA ───────────────────────────────────
 
 @app.route("/kite/ltp")
 def kite_ltp_route():
     symbols = request.args.getlist("symbols")
-
-    # No-param mode: return full index snapshot for 2s RT polling
     if not symbols:
         idx_map = {
             "NIFTY 50":          "NSE:NIFTY 50",
@@ -300,11 +278,7 @@ def kite_ltp_route():
         for name, sym in idx_map.items():
             c = kite["ltp_sym"].get(sym)
             if c: snap[sym] = c["ltp"]
-
-        # FII/DII from cache
-        fii = _cget("fii", ttl=300) or {}
-
-        # Option meta from last chain
+        fii      = _cget("fii", ttl=300) or {}
         opt_meta = {}
         for sym in ["NIFTY", "BANKNIFTY", "FINNIFTY"]:
             c = _cget(f"oc_{sym}", ttl=60)
@@ -323,12 +297,9 @@ def kite_ltp_route():
             "last_tick":   kite["last_tick_ts"],
             "ts":          time.time(),
         })
-
-    # Specific symbols requested
     if not kite["access_token"]:
         return jsonify({"error": "Kite not connected"}), 401
-    prices = kite_ltp_rest(symbols, kite)
-    return jsonify(prices)
+    return jsonify(kite_ltp_rest(symbols, kite))
 
 @app.route("/kite/quote")
 def kite_quote():
@@ -369,22 +340,16 @@ def cancel_order(order_id):
     return jsonify(kite_cancel_order(order_id, kite, variety=variety))
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ROUTES — SIGNAL
-# ════════════════════════════════════════════════════════════════════════════════
+# ── ROUTES — SIGNAL ──────────────────────────────────────
 
 @app.route("/generate-signal", methods=["POST"])
 def generate_signal_route():
     global risk_mgr
     data = request.get_json(force=True) or {}
-
-    # Init / update risk manager
     if not risk_mgr or data:
         risk_mgr = RiskManager(data)
-
     try:
-        signal = _do_generate_signal(data)
-        return jsonify(signal)
+        return jsonify(_do_generate_signal(data))
     except Exception as e:
         print(f"[GENERATE SIGNAL] {e}")
         return jsonify({"error": str(e)}), 500
@@ -396,9 +361,7 @@ def latest_signal():
     return jsonify(last_signal)
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ROUTES — TRADE
-# ════════════════════════════════════════════════════════════════════════════════
+# ── ROUTES — TRADE ───────────────────────────────────────
 
 @app.route("/trade/enter", methods=["POST"])
 def trade_enter():
@@ -414,16 +377,13 @@ def trade_enter():
     if not can["allowed"]:
         return jsonify({"error": can["reason"]}), 400
 
-    # Use signal from request or last_signal
-    trade_data = data.get("trade") or last_signal
+    trade_data  = data.get("trade") or last_signal
     if not trade_data:
         return jsonify({"error": "No trade data"}), 400
 
-    # Position sizing
     option_data = _cget(f"oc_{trade_data.get('symbol', 'NIFTY')}", ttl=60) or {}
     position    = risk_mgr.calculate_position(trade_data, option_data)
 
-    # Merge strikes from request if provided
     for f in ["ce_strike", "pe_strike", "ce_price", "pe_price", "lots", "expiry"]:
         if data.get(f): position[f] = data[f]
 
@@ -431,56 +391,43 @@ def trade_enter():
     position["capital_before"] = risk_mgr.available_capital
     risk_mgr.in_trade_capital  = position["capital_used"]
 
-    # Place Kite orders if requested
     orders_placed = []
     if data.get("place_orders") and kite["access_token"]:
         for params in build_order_params(position):
-            result = kite_place_order(dict(params), kite)
-            orders_placed.append(result)
+            orders_placed.append(kite_place_order(dict(params), kite))
 
-    # Save to DB and start monitoring
     trade_id = save_trade(position)
     monitor  = TradeMonitor(position)
     active_monitor = {
-        "trade":      position,
-        "trade_id":   trade_id,
-        "monitor":    monitor,
-        "start_time": time.time(),
+        "trade":       position,
+        "trade_id":    trade_id,
+        "monitor":     monitor,
+        "start_time":  time.time(),
         "live_ce_ltp": position.get("ce_price", 0),
         "live_pe_ltp": position.get("pe_price", 0),
         "live_spot":   position.get("spot", 0),
     }
 
-    return jsonify({
-        "status":        "entered",
-        "trade":         position,
-        "trade_id":      trade_id,
-        "orders_placed": orders_placed,
-    })
+    return jsonify({"status": "entered", "trade": position,
+                    "trade_id": trade_id, "orders_placed": orders_placed})
 
 @app.route("/trade/monitor")
 def trade_monitor_route():
     if not active_monitor:
         return jsonify({"in_trade": False})
 
-    trade_data   = active_monitor["trade"]
-    chain        = _cget(f"oc_{trade_data.get('symbol', 'NIFTY')}", ttl=60)
+    trade_data    = active_monitor["trade"]
+    chain         = _cget(f"oc_{trade_data.get('symbol', 'NIFTY')}", ttl=60)
     current_chain = (chain or {}).get("chain", [])
-
     live_ltp = {
         "ce_ltp":   active_monitor.get("live_ce_ltp", 0),
         "pe_ltp":   active_monitor.get("live_pe_ltp", 0),
         "spot_ltp": active_monitor.get("live_spot", 0),
     }
-
-    score = last_signal.get("composite", 0) if last_signal else 0
+    score  = last_signal.get("composite", 0) if last_signal else 0
     result = active_monitor["monitor"].check(current_chain, score, live_ltp=live_ltp)
 
-    return jsonify({
-        "in_trade": True,
-        "trade":    trade_data,
-        "monitor":  result,
-    })
+    return jsonify({"in_trade": True, "trade": trade_data, "monitor": result})
 
 @app.route("/trade/exit", methods=["POST"])
 def trade_exit():
@@ -495,43 +442,31 @@ def trade_exit():
         "pe_ltp":   active_monitor.get("live_pe_ltp", 0),
         "spot_ltp": active_monitor.get("live_spot", 0),
     }
-    chain        = _cget(f"oc_{trade_data.get('symbol', 'NIFTY')}", ttl=60)
+    chain         = _cget(f"oc_{trade_data.get('symbol', 'NIFTY')}", ttl=60)
     current_chain = (chain or {}).get("chain", [])
-    score = last_signal.get("composite", 0) if last_signal else 0
-
-    monitor_result = active_monitor["monitor"].check(
-        current_chain, score, live_ltp=live_ltp
-    )
+    score         = last_signal.get("composite", 0) if last_signal else 0
+    monitor_result = active_monitor["monitor"].check(current_chain, score, live_ltp=live_ltp)
 
     pnl       = data.get("pnl", monitor_result["pnl"])
     exit_type = data.get("exit_type", monitor_result["status"])
 
-    exit_data = {
+    close_trade(active_monitor["trade_id"], {
         "ce_exit_price": live_ltp["ce_ltp"] or data.get("ce_exit_price", 0),
         "pe_exit_price": live_ltp["pe_ltp"] or data.get("pe_exit_price", 0),
         "pnl":           pnl,
         "exit_type":     exit_type,
         "capital_after": (risk_mgr.available_capital + pnl) if risk_mgr else 0,
         "notes":         data.get("notes", ""),
-    }
-
-    close_trade(active_monitor["trade_id"], exit_data)
+    })
     if risk_mgr:
         risk_mgr.record_trade_result(pnl)
 
-    result = {
-        "status":    "exited",
-        "pnl":       pnl,
-        "exit_type": exit_type,
-        "capital":   risk_mgr.get_status() if risk_mgr else {},
-    }
     active_monitor = None
-    return jsonify(result)
+    return jsonify({"status": "exited", "pnl": pnl, "exit_type": exit_type,
+                    "capital": risk_mgr.get_status() if risk_mgr else {}})
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ROUTES — CAPITAL
-# ════════════════════════════════════════════════════════════════════════════════
+# ── ROUTES — CAPITAL ─────────────────────────────────────
 
 @app.route("/capital")
 def capital_status():
@@ -547,17 +482,13 @@ def capital_reset():
     return jsonify({"status": "reset", "capital": risk_mgr.get_status()})
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  ROUTES — HISTORY & MARKET DATA
-# ════════════════════════════════════════════════════════════════════════════════
+# ── ROUTES — HISTORY & MARKET ────────────────────────────
 
 @app.route("/history")
 def history():
     limit = int(request.args.get("limit", 50))
-    return jsonify({
-        "trades":  get_trade_history(limit),
-        "summary": get_performance_summary(),
-    })
+    return jsonify({"trades": get_trade_history(limit),
+                    "summary": get_performance_summary()})
 
 @app.route("/market-status")
 def market_status_route():
@@ -597,9 +528,9 @@ def market_news():
     if c: return jsonify(c)
     try:
         from core.data_fetcher import nse_get
-        data = nse_get("https://www.nseindia.com/api/market-news") or []
-        result = {"headlines": data[:10] if isinstance(data, list) else
-                  data.get("data", [])[:10], "ts": time.time()}
+        data   = nse_get("https://www.nseindia.com/api/market-news") or []
+        result = {"headlines": data[:10] if isinstance(data, list)
+                  else data.get("data", [])[:10], "ts": time.time()}
         _cset("news", result)
         return jsonify(result)
     except Exception as e:
@@ -607,18 +538,14 @@ def market_news():
     return jsonify({"headlines": [], "error": "unavailable"})
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-#  STARTUP
-# ════════════════════════════════════════════════════════════════════════════════
+# ── STARTUP ──────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Resume WS if token already in env
     if kite["access_token"]:
         kite["connected"] = True
         _start_kite_ws_thread()
         start_ltp_polling()
         print("[SERVER] Resumed Kite session from env token")
-
     port = int(os.environ.get("PORT", 5000))
     print(f"[SERVER] QUANTRA BEAST v4.0 starting on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
