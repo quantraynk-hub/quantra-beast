@@ -2,18 +2,6 @@
 QUANTRA BEAST v4.0 — Modular Production Server
 Zerodha Kite Connect — PRIMARY & ONLY broker
 8 signal engines + capital management + DB
-
-Architecture:
-  api/server.py          ← this file (thin Flask router)
-  core/kite_client.py    ← Kite auth / WS / REST
-  core/data_fetcher.py   ← NSE + Kite data pipeline
-  core/cache.py          ← in-memory TTL cache
-  engines/               ← 8 individual signal engines
-  signals/fusion_engine.py ← weighted signal combiner
-  signals/strike_selector.py ← strike + expiry selection
-  capital/risk_manager.py ← position sizing + risk rules
-  monitoring/trade_monitor.py ← open trade P&L + SL logic
-  database/db.py         ← SQLite trade history
 """
 
 from flask import Flask, jsonify, request
@@ -40,15 +28,16 @@ from core.kite_client   import (
 from core.data_fetcher  import (
     fetch_indices, fetch_chain, fetch_fii_dii, fetch_market_status,
 )
-from signals.fusion_engine  import generate_signal as fusion_generate
+from signals.fusion_engine   import generate_signal as fusion_generate
 from signals.strike_selector import select_strike
-from capital.risk_manager   import RiskManager
+from capital.risk_manager    import RiskManager
 from monitoring.trade_monitor import TradeMonitor
 from database.db import (
     init_db, save_signal, save_trade, close_trade, get_trade_history,
     get_performance_summary,
 )
 
+# ── Kite state ───────────────────────────────────────────
 kite = {
     "access_token":    os.environ.get("KITE_ACCESS_TOKEN", ""),
     "connected":       False,
@@ -63,9 +52,11 @@ kite = {
     "last_tick_ts":    None,
 }
 
-risk_mgr       = None
-active_monitor = None
-last_signal    = None
+# ── Global state ─────────────────────────────────────────
+risk_mgr              = None
+active_monitor        = None
+last_signal           = None
+prev_signal           = None          # for signal delta
 last_auto_signal_time = None
 _ltp_poll_running     = False
 
@@ -76,7 +67,9 @@ WEIGHTS = {
 
 init_db()
 
-# ── BACKGROUND THREADS ───────────────────────────────────
+# ════════════════════════════════════════════════════════
+#  BACKGROUND THREADS
+# ════════════════════════════════════════════════════════
 
 def _start_kite_ws_thread():
     threading.Thread(target=start_kite_ws, args=(kite,), daemon=True).start()
@@ -120,7 +113,7 @@ def auto_signal_loop():
                 if not last_auto_signal_time or (time.time() - last_auto_signal_time) >= 180:
                     print(f"[AUTO] Signal at {now.strftime('%H:%M')}")
                     try:
-                        cfg = risk_mgr._last_cfg or {
+                        cfg = getattr(risk_mgr, '_last_cfg', None) or {
                             "symbol":     "NIFTY",
                             "capital":    risk_mgr.total,
                             "risk_pct":   risk_mgr.risk_pct,
@@ -137,7 +130,9 @@ def auto_signal_loop():
 
 threading.Thread(target=auto_signal_loop, daemon=True).start()
 
-# ── SIGNAL GENERATION ────────────────────────────────────
+# ════════════════════════════════════════════════════════
+#  SIGNAL GENERATION
+# ════════════════════════════════════════════════════════
 
 def _fetch_news_score(symbol):
     try:
@@ -146,8 +141,8 @@ def _fetch_news_score(symbol):
         if data:
             headlines = [item.get("description", "") for item in
                          (data if isinstance(data, list) else data.get("data", []))[:5]]
-            pos_kw = ["rally", "surge", "gain", "bull", "positive", "up", "high", "record"]
-            neg_kw = ["fall", "crash", "drop", "bear", "negative", "down", "low", "sell"]
+            pos_kw = ["rally","surge","gain","bull","positive","up","high","record","rise","strong"]
+            neg_kw = ["fall","crash","drop","bear","negative","down","low","sell","weak","cut"]
             score = 0
             for h in headlines:
                 hl = h.lower()
@@ -158,17 +153,50 @@ def _fetch_news_score(symbol):
         pass
     return 0, []
 
+def _build_signal_delta(old_sig, new_sig):
+    """Compare two signals and return what changed."""
+    if not old_sig:
+        return None
+    delta = {}
+    # Action change
+    if old_sig.get("action") != new_sig.get("action"):
+        delta["action"] = {"from": old_sig.get("action"), "to": new_sig.get("action")}
+    # Composite score change
+    old_c = old_sig.get("composite", 0)
+    new_c = new_sig.get("composite", 0)
+    if abs(new_c - old_c) >= 3:
+        delta["composite"] = {"from": round(old_c,1), "to": round(new_c,1), "diff": round(new_c-old_c,1)}
+    # Engine score changes
+    engine_changes = {}
+    for eng in ["trend","options","gamma","volatility","regime","sentiment","flow","news"]:
+        old_e = (old_sig.get("engines") or {}).get(eng, {})
+        new_e = (new_sig.get("engines") or {}).get(eng, {})
+        old_s = old_e.get("score", 0)
+        new_s = new_e.get("score", 0)
+        if abs(new_s - old_s) >= 5:
+            engine_changes[eng] = {"from": round(old_s,0), "to": round(new_s,0), "diff": round(new_s-old_s,0)}
+    if engine_changes:
+        delta["engines"] = engine_changes
+    # Market data changes
+    old_md = old_sig.get("market_data", {})
+    new_md = new_sig.get("market_data", {})
+    mkt_changes = {}
+    for key in ["pcr","vix","fii_net","spot","max_pain"]:
+        ov, nv = old_md.get(key,0), new_md.get(key,0)
+        if ov and nv and abs((nv-ov)/max(abs(ov),0.001)) > 0.02:
+            mkt_changes[key] = {"from": round(ov,2), "to": round(nv,2)}
+    if mkt_changes:
+        delta["market"] = mkt_changes
+    return delta if delta else None
+
 def _do_generate_signal(cfg):
-    global last_signal
+    global last_signal, prev_signal
     symbol = cfg.get("symbol", "NIFTY")
 
     indices     = fetch_indices(kite)
     option_data = fetch_chain(symbol, kite)
     fii_dii     = fetch_fii_dii()
     news_score, headlines = _fetch_news_score(symbol)
-
-    if not option_data.get("chain"):
-        print(f"[SIGNAL] Warning: empty chain for {symbol}")
 
     snapshot = {
         "symbol":      symbol,
@@ -177,15 +205,20 @@ def _do_generate_signal(cfg):
         "fii_dii":     fii_dii,
     }
 
-    signal = fusion_generate(snapshot, weights=WEIGHTS, news_score=news_score)
+    # Use custom weights if provided
+    w = cfg.get("weights", WEIGHTS)
+
+    signal = fusion_generate(snapshot, weights=w, news_score=news_score)
     signal["headlines"] = headlines
 
+    # Strike selection
     if signal["action"] != "WAIT" and option_data.get("chain"):
         vix     = indices.get("INDIA VIX", {}).get("last", 15)
         strikes = select_strike(signal, option_data, signal["action"], vix=vix)
         signal["ce_strike"] = strikes.get("ce_strike")
         signal["pe_strike"] = strikes.get("pe_strike")
 
+    # Capital check
     if risk_mgr:
         can = risk_mgr.can_trade()
         if not can["allowed"] and signal["action"] != "WAIT":
@@ -193,7 +226,23 @@ def _do_generate_signal(cfg):
             signal["signal_cls"] = "wait"
             signal["signal_sub"] = f"Capital block: {can['reason']}"
 
+    # Signal delta (what changed vs last signal)
+    signal["delta"] = _build_signal_delta(last_signal, signal)
+
+    # Pre-market context
+    now = datetime.datetime.now()
+    mins = now.hour * 60 + now.minute
+    signal["pre_market"] = mins < 555   # before 9:15
+    signal["post_market"] = mins > 930  # after 3:30
+    signal["market_session"] = (
+        "PRE_MARKET"  if mins < 555  else
+        "POST_MARKET" if mins > 930  else
+        "LIVE"
+    )
+
+    prev_signal = last_signal
     last_signal = signal
+
     try:
         save_signal(signal)
     except Exception as e:
@@ -203,11 +252,26 @@ def _do_generate_signal(cfg):
     return signal
 
 
-# ── ROUTES — PING & KITE AUTH ────────────────────────────
+# ════════════════════════════════════════════════════════
+#  ROUTES — PING & KITE AUTH
+# ════════════════════════════════════════════════════════
 
 @app.route("/ping")
 def ping():
-    return jsonify({"status": "alive", "ts": time.time(), "version": "4.0-modular"})
+    now  = datetime.datetime.now()
+    mins = now.hour * 60 + now.minute
+    session = (
+        "PRE_MARKET"  if mins < 555  else
+        "POST_MARKET" if mins > 930  else
+        "LIVE"
+    )
+    return jsonify({
+        "status":  "alive",
+        "ts":      time.time(),
+        "version": "4.0-modular",
+        "session": session,
+        "time":    now.strftime("%H:%M:%S"),
+    })
 
 @app.route("/kite/status")
 def kite_status():
@@ -262,7 +326,9 @@ def kite_logout():
     return jsonify({"status": "logged_out"})
 
 
-# ── ROUTES — KITE DATA ───────────────────────────────────
+# ════════════════════════════════════════════════════════
+#  ROUTES — KITE DATA
+# ════════════════════════════════════════════════════════
 
 @app.route("/kite/ltp")
 def kite_ltp_route():
@@ -340,7 +406,9 @@ def cancel_order(order_id):
     return jsonify(kite_cancel_order(order_id, kite, variety=variety))
 
 
-# ── ROUTES — SIGNAL ──────────────────────────────────────
+# ════════════════════════════════════════════════════════
+#  ROUTES — SIGNAL
+# ════════════════════════════════════════════════════════
 
 @app.route("/generate-signal", methods=["POST"])
 def generate_signal_route():
@@ -349,7 +417,27 @@ def generate_signal_route():
     if not risk_mgr or data:
         risk_mgr = RiskManager(data)
     try:
-        return jsonify(_do_generate_signal(data))
+        signal = _do_generate_signal(data)
+        # Include capital + risk status in every signal response
+        signal["capital"]   = risk_mgr.get_status() if risk_mgr else {}
+        signal["can_trade"] = risk_mgr.can_trade()  if risk_mgr else {"allowed": True}
+        # Include indices and fii_dii for market data panel
+        signal["indices"]   = _cget("indices", ttl=10) or {}
+        signal["fii_dii"]   = _cget("fii",     ttl=300) or {}
+        # Include option meta
+        sym = data.get("symbol","NIFTY")
+        oc  = _cget(f"oc_{sym}", ttl=60) or {}
+        signal["option_meta"] = {
+            "spot":       oc.get("spot"),
+            "atm_strike": oc.get("atm_strike"),
+            "pcr":        oc.get("pcr"),
+            "max_pain":   oc.get("max_pain"),
+            "expiry":     oc.get("expiry"),
+            "resistances":oc.get("resistances",[]),
+            "supports":   oc.get("supports",[]),
+            "symbol":     sym,
+        }
+        return jsonify(signal)
     except Exception as e:
         print(f"[GENERATE SIGNAL] {e}")
         return jsonify({"error": str(e)}), 500
@@ -358,10 +446,58 @@ def generate_signal_route():
 def latest_signal():
     if not last_signal:
         return jsonify({"error": "No signal yet"}), 404
-    return jsonify(last_signal)
+    sig = dict(last_signal)
+    if risk_mgr:
+        sig["capital"]   = risk_mgr.get_status()
+        sig["can_trade"] = risk_mgr.can_trade()
+    return jsonify(sig)
+
+@app.route("/signal-delta")
+def signal_delta():
+    """Return what changed between last two signals."""
+    if not last_signal:
+        return jsonify({"error": "No signal yet"}), 404
+    return jsonify({
+        "current":  last_signal,
+        "previous": prev_signal,
+        "delta":    last_signal.get("delta"),
+    })
+
+@app.route("/pre-market")
+def pre_market():
+    """Pre-market data: Gift Nifty, global indices alignment."""
+    try:
+        from core.data_fetcher import nse_get
+        gift = _cget("gift_nifty", ttl=60)
+        if not gift:
+            gift = nse_get("https://www.nseindia.com/api/gift-nifty") or {}
+            if gift: _cset("gift_nifty", gift)
+
+        indices = fetch_indices(kite)
+        fii     = fetch_fii_dii()
+        now     = datetime.datetime.now()
+        mins    = now.hour * 60 + now.minute
+
+        # Pre-market bias
+        gift_chg = gift.get("pChange", 0) if gift else 0
+        bias = "BULLISH" if gift_chg > 0.3 else "BEARISH" if gift_chg < -0.3 else "NEUTRAL"
+
+        return jsonify({
+            "gift_nifty":   gift,
+            "indices":      indices,
+            "fii_dii":      fii,
+            "bias":         bias,
+            "opens_in_secs": max(0, (555 - mins) * 60) if mins < 555 else 0,
+            "session":      "PRE_MARKET" if mins < 555 else "LIVE",
+            "ts":           time.time(),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
-# ── ROUTES — TRADE ───────────────────────────────────────
+# ════════════════════════════════════════════════════════
+#  ROUTES — TRADE
+# ════════════════════════════════════════════════════════
 
 @app.route("/trade/enter", methods=["POST"])
 def trade_enter():
@@ -384,15 +520,16 @@ def trade_enter():
     option_data = _cget(f"oc_{trade_data.get('symbol', 'NIFTY')}", ttl=60) or {}
     position    = risk_mgr.calculate_position(trade_data, option_data)
 
-    for f in ["ce_strike", "pe_strike", "ce_price", "pe_price", "lots", "expiry"]:
+    for f in ["ce_strike","pe_strike","ce_price","pe_price","lots","expiry"]:
         if data.get(f): position[f] = data[f]
 
     position["signal_id"]      = trade_data.get("signal_id", str(uuid.uuid4())[:8])
     position["capital_before"] = risk_mgr.available_capital
+    position["paper_trade"]    = data.get("paper_trade", False)
     risk_mgr.in_trade_capital  = position["capital_used"]
 
     orders_placed = []
-    if data.get("place_orders") and kite["access_token"]:
+    if data.get("place_orders") and kite["access_token"] and not position["paper_trade"]:
         for params in build_order_params(position):
             orders_placed.append(kite_place_order(dict(params), kite))
 
@@ -406,10 +543,16 @@ def trade_enter():
         "live_ce_ltp": position.get("ce_price", 0),
         "live_pe_ltp": position.get("pe_price", 0),
         "live_spot":   position.get("spot", 0),
+        "paper_trade": position["paper_trade"],
     }
 
-    return jsonify({"status": "entered", "trade": position,
-                    "trade_id": trade_id, "orders_placed": orders_placed})
+    return jsonify({
+        "status":        "entered",
+        "trade":         position,
+        "trade_id":      trade_id,
+        "paper_trade":   position["paper_trade"],
+        "orders_placed": orders_placed,
+    })
 
 @app.route("/trade/monitor")
 def trade_monitor_route():
@@ -427,7 +570,13 @@ def trade_monitor_route():
     score  = last_signal.get("composite", 0) if last_signal else 0
     result = active_monitor["monitor"].check(current_chain, score, live_ltp=live_ltp)
 
-    return jsonify({"in_trade": True, "trade": trade_data, "monitor": result})
+    return jsonify({
+        "in_trade":   True,
+        "trade":      trade_data,
+        "monitor":    result,
+        "paper_trade": active_monitor.get("paper_trade", False),
+        "live_spot":  active_monitor.get("live_spot", 0),
+    })
 
 @app.route("/trade/exit", methods=["POST"])
 def trade_exit():
@@ -457,16 +606,23 @@ def trade_exit():
         "exit_type":     exit_type,
         "capital_after": (risk_mgr.available_capital + pnl) if risk_mgr else 0,
         "notes":         data.get("notes", ""),
+        "paper_trade":   active_monitor.get("paper_trade", False),
     })
-    if risk_mgr:
+    if risk_mgr and not active_monitor.get("paper_trade"):
         risk_mgr.record_trade_result(pnl)
 
     active_monitor = None
-    return jsonify({"status": "exited", "pnl": pnl, "exit_type": exit_type,
-                    "capital": risk_mgr.get_status() if risk_mgr else {}})
+    return jsonify({
+        "status":    "exited",
+        "pnl":       pnl,
+        "exit_type": exit_type,
+        "capital":   risk_mgr.get_status() if risk_mgr else {},
+    })
 
 
-# ── ROUTES — CAPITAL ─────────────────────────────────────
+# ════════════════════════════════════════════════════════
+#  ROUTES — CAPITAL
+# ════════════════════════════════════════════════════════
 
 @app.route("/capital")
 def capital_status():
@@ -482,13 +638,17 @@ def capital_reset():
     return jsonify({"status": "reset", "capital": risk_mgr.get_status()})
 
 
-# ── ROUTES — HISTORY & MARKET ────────────────────────────
+# ════════════════════════════════════════════════════════
+#  ROUTES — HISTORY & MARKET
+# ════════════════════════════════════════════════════════
 
 @app.route("/history")
 def history():
     limit = int(request.args.get("limit", 50))
-    return jsonify({"trades": get_trade_history(limit),
-                    "summary": get_performance_summary()})
+    return jsonify({
+        "trades":  get_trade_history(limit),
+        "summary": get_performance_summary(),
+    })
 
 @app.route("/market-status")
 def market_status_route():
@@ -529,8 +689,10 @@ def market_news():
     try:
         from core.data_fetcher import nse_get
         data   = nse_get("https://www.nseindia.com/api/market-news") or []
-        result = {"headlines": data[:10] if isinstance(data, list)
-                  else data.get("data", [])[:10], "ts": time.time()}
+        result = {
+            "headlines": data[:10] if isinstance(data, list) else data.get("data", [])[:10],
+            "ts": time.time(),
+        }
         _cset("news", result)
         return jsonify(result)
     except Exception as e:
@@ -538,7 +700,9 @@ def market_news():
     return jsonify({"headlines": [], "error": "unavailable"})
 
 
-# ── STARTUP ──────────────────────────────────────────────
+# ════════════════════════════════════════════════════════
+#  STARTUP
+# ════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     if kite["access_token"]:
