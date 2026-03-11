@@ -699,6 +699,18 @@ def market_news():
         print(f"[NEWS] {e}")
     return jsonify({"headlines": [], "error": "unavailable"})
 
+# ... all your existing routes above ...
+
+
+# ════════════════════════════════════════════════════════
+#  DASHBOARD
+# ════════════════════════════════════════════════════════
+
+@app.route("/")
+def dashboard():
+    with open(os.path.join(os.path.dirname(__file__), "dashboard.html")) as f:
+        return f.read(), 200, {"Content-Type": "text/html"}
+
 
 # ════════════════════════════════════════════════════════
 #  STARTUP
