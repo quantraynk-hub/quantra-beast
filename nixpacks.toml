@@ -1,8 +1,0 @@
-[phases.setup]
-nixPkgs = ["python311"]
-
-[phases.install]
-cmds = ["python3.11 -m pip install -r requirements.txt"]
-
-[start]
-cmd = "python3.11 -m gunicorn -w 2 -b 0.0.0.0:$PORT api.server:app"
