@@ -10,4 +10,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping Quantra Beast
-        run: curl --max-time 90 https://quantra-beast.onrender.com/ping
+        run: curl --max-time 90 https://quantra-beast-production.up.railway.app/ping
