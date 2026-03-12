@@ -1015,7 +1015,7 @@ canvas.spark{display:block;width:100%;height:100%;}
     <div class="ch"><div class="dot"></div>BACKEND</div>
     <div class="cb">
       <div style="display:flex;gap:5px">
-        <input class="inp" id="backendUrl" value="https://quantra-beast.onrender.com">
+        <input class="inp" id="backendUrl" value="https://quantra-beast-production.up.railway.app">
         <button class="btn bg" id="connectBtn" onclick="connect()" style="flex-shrink:0;white-space:nowrap">GO</button>
       </div>
       <div class="cst wait" id="cst"><div class="sd"></div><span id="cstTxt">Not connected</span></div>
@@ -1739,7 +1739,7 @@ canvas.spark{display:block;width:100%;height:100%;}
 
 <script>
 'use strict';
-let backend='https://quantra-beast.onrender.com';
+let backend='https://quantra-beast-production.up.railway.app';
 let connected=false,inTrade=false;
 let tradeId=null,lastSig=null,lastPos=null;
 let monTimer=null,tradeLog=[];
