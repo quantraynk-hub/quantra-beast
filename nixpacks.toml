@@ -6,21 +6,3 @@ cmds = ["pip3 install -r requirements.txt"]
 
 [start]
 cmd = "gunicorn -w 2 -b 0.0.0.0:$PORT api.server:app"
-```
-
-Commit → wait for redeploy.
-
----
-
-### If that still fails — do this instead:
-
-Delete `nixpacks.toml` and create a **`Procfile`** instead (simpler):
-
-**Filename:** `Procfile` (no extension, capital P)
-```
-web: gunicorn -w 2 -b 0.0.0.0:$PORT api.server:app
-```
-
-And edit your `.python-version` file → change content to just:
-```
-3.11
