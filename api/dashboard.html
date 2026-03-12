@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QUANTRA BEAST v17 — NSE/Kite | Trader-First Design | Greeks | Entry Timing | OI Heatmap</title>
+<title>QUANTRA BEAST v19 — NSE/Kite | Trader-First Design | Greeks | Entry Timing | OI Heatmap</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <style>
@@ -963,7 +963,7 @@ canvas.spark{display:block;width:100%;height:100%;}
 <!-- LOADING -->
 <div id="loadOverlay">
   <div class="load-logo">QUANTRA <span class="load-beast">BEAST</span></div>
-  <div class="load-sub">v15 · TRADER-FIRST · GREEKS · ENTRY TIMING · OI HEATMAP</div>
+  <div class="load-sub">v18 · RAILWAY · TRADER-FIRST · GREEKS · ENTRY TIMING · OI HEATMAP</div>
   <div class="load-bar-wrap"><div class="load-bar"></div></div>
   <div style="font-size:7px;color:var(--text3);letter-spacing:3px" id="loadMsg">INITIALIZING ENGINES...</div>
 </div>
@@ -973,14 +973,14 @@ canvas.spark{display:block;width:100%;height:100%;}
   <div class="ticker-lbl">⚡ MARKET IMPACT</div>
   <div class="ticker-track">
     <div class="ticker-scroll" id="tickerScroll">
-      <span class="ti"><span class="itxt">Connecting to QUANTRA BEAST v17 — Kite powered...</span></span>
+      <span class="ti"><span class="itxt">Connecting to QUANTRA BEAST v19 — Kite powered...</span></span>
     </div>
   </div>
 </div>
 
 <!-- HEADER -->
 <header>
-  <div class="logo">QUANTRA<small>BEAST <span class="logo-v">v17</span></small></div>
+  <div class="logo">QUANTRA<small>BEAST <span class="logo-v">v18</span></small></div>
   <div class="kite-badge-hdr" id="kiteBadgeHdr">KITE</div>
   <div class="hsep"></div>
   <div class="hticks">
@@ -1469,8 +1469,13 @@ canvas.spark{display:block;width:100%;height:100%;}
 
     <!-- REASONING -->
     <div class="card">
-      <div class="ch"><div class="dot"></div>SIGNAL REASONING</div>
-      <div class="cb" id="rsnDiv"></div>
+      <div class="ch">
+        <div class="dot"></div>WHY THIS SIGNAL?
+        <span style="margin-left:auto;font-size:6px;color:var(--text3);letter-spacing:1px">PLAIN ENGLISH</span>
+      </div>
+      <div class="cb" id="rsnDiv">
+        <div style="font-size:8px;color:var(--text3);text-align:center;padding:12px">Generate signal to see reasoning</div>
+      </div>
     </div>
 
     <!-- KEY LEVELS -->
@@ -1703,35 +1708,72 @@ canvas.spark{display:block;width:100%;height:100%;}
     </div>
   </div>
 
-  <!-- QUICK GUIDE — v15 TRADER CHECKLIST -->
-  <div class="card">
-    <div class="ch"><div class="dot" style="background:var(--cyan);box-shadow:var(--glowc)"></div>⚡ TRADER CHECKLIST</div>
-    <div class="cb">
-      <div style="font-size:8px;color:var(--text2);line-height:2.0">
-        <div>1. <span style="color:var(--text)">Connect</span> backend → GO</div>
-        <div>2. <span style="color:var(--kite)">KITE LOGIN</span> for live LTP feed</div>
-        <div>3. <span style="color:var(--yellow)">SELECT MODE</span> (Scalp / Positional)</div>
-        <div>4. <span style="color:var(--green)">GENERATE SIGNAL</span> — see analysis</div>
-        <div>5. Check <span style="color:var(--yellow)">ENTRY TIMING SCORE</span> → ENTER only if ≥60</div>
-        <div>6. Check <span style="color:var(--purple)">GREEKS</span> — avoid high IV entry</div>
-        <div>7. <span style="color:var(--cyan)">CONFIRM ENTRY</span> → Monitoring starts</div>
-        <div>8. Exit at SL or Trail when price moves 1R</div>
+  <!-- NEWS INTELLIGENCE PANEL — v19 CLEAN -->
+  <div class="card" id="newsIntelCard" style="flex:1;min-height:200px;display:flex;flex-direction:column;border-color:#1a2800;">
+
+    <!-- Header -->
+    <div class="ch" style="background:rgba(255,200,32,.04);border-bottom-color:#2a1800;flex-shrink:0;">
+      <div class="dot" style="background:var(--yellow);box-shadow:0 0 6px rgba(255,200,32,.5)"></div>
+      <span style="color:var(--yellow);letter-spacing:2px;font-size:8px">📰 MARKET NEWS</span>
+      <span id="nwsCnt" style="margin-left:auto;font-size:6px;color:var(--text3);letter-spacing:1px">—</span>
+      <span style="margin-left:8px;font-size:9px;cursor:pointer;color:var(--text3);padding:0 4px" onclick="refreshNews()" title="Refresh">↻</span>
+    </div>
+
+    <!-- Sentiment grid -->
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:3px;padding:7px 8px 5px;flex-shrink:0">
+      <div style="background:var(--green3);border:1px solid var(--green2);border-radius:3px;padding:5px 3px;text-align:center">
+        <div style="font-size:13px;font-weight:700;color:var(--green);line-height:1" id="nwsBull">—</div>
+        <div style="font-size:6px;color:var(--green2);letter-spacing:.5px;margin-top:2px">BULLISH</div>
       </div>
-      <div style="margin-top:6px;padding:6px;background:var(--bg3);border-radius:3px;border:1px solid var(--border)">
-        <div style="font-size:6px;color:var(--text3);letter-spacing:1px;margin-bottom:4px">GOLDEN RULES</div>
-        <div style="font-size:7px;color:var(--text2);line-height:1.8">
-          🔴 Never trade against PCR + VIX combo<br>
-          🟡 Wait for Entry Timing ≥ 60 before entering<br>
-          🟢 Scale out 50% at 1R, let rest run to target<br>
-          ⚫ 3 losses in a day = stop, review tomorrow
-        </div>
+      <div style="background:var(--red3);border:1px solid var(--red2);border-radius:3px;padding:5px 3px;text-align:center">
+        <div style="font-size:13px;font-weight:700;color:var(--red);line-height:1" id="nwsBear">—</div>
+        <div style="font-size:6px;color:var(--red2);letter-spacing:.5px;margin-top:2px">BEARISH</div>
       </div>
-      <div style="margin-top:5px;padding-top:4px;border-top:1px solid var(--border)">
-        <div style="font-size:6px;color:var(--cyan);margin-bottom:3px;letter-spacing:1px">FEED STATUS</div>
-        <div style="font-size:7px;color:var(--text2)">🟢 Kite WS = real-time <b>2s</b> ticks</div>
-        <div style="font-size:7px;color:var(--text3);margin-top:1px">⚪ No WS = Kite REST, 30s refresh</div>
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:5px 3px;text-align:center">
+        <div style="font-size:13px;font-weight:700;color:var(--text);line-height:1" id="nwsSc">—</div>
+        <div style="font-size:6px;color:var(--text3);letter-spacing:.5px;margin-top:2px">NET</div>
+      </div>
+      <div style="background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:5px 3px;text-align:center">
+        <div style="font-size:13px;font-weight:700;color:var(--text2);line-height:1" id="nwsTot">—</div>
+        <div style="font-size:6px;color:var(--text3);letter-spacing:.5px;margin-top:2px">SCANNED</div>
       </div>
     </div>
+
+    <!-- Net point impact bar -->
+    <div class="point-impact-bar" style="padding:4px 8px 6px;flex-shrink:0">
+      <div style="font-size:6px;color:var(--text3);letter-spacing:1px;flex-shrink:0">NEWS IMPACT</div>
+      <div style="flex:1;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;display:flex;position:relative">
+        <div style="width:50%;display:flex;justify-content:flex-end">
+          <div id="piNeg" style="width:0%;background:var(--red2);height:100%;border-radius:2px 0 0 2px;transition:width .5s"></div>
+        </div>
+        <div style="width:1px;background:var(--border2)"></div>
+        <div style="width:50%">
+          <div id="piPos" style="width:0%;background:var(--green2);height:100%;border-radius:0 2px 2px 0;transition:width .5s"></div>
+        </div>
+      </div>
+      <div id="piVal" class="pi-value neutral" style="font-size:9px;font-weight:700;min-width:50px;text-align:right">—</div>
+    </div>
+
+    <!-- Mood line -->
+    <div id="nwsMoodLine" style="margin:0 8px 6px;font-size:8px;color:var(--text2);padding:5px 8px;background:var(--bg3);border-radius:3px;border-left:2px solid var(--border);line-height:1.5;flex-shrink:0">
+      Generate signal to load news analysis
+    </div>
+
+    <!-- Filter tabs -->
+    <div style="display:flex;gap:3px;padding:0 8px 5px;flex-shrink:0" id="newsTabs">
+      <button onclick="filterNews('all')" id="nfAll" style="font-size:7px;padding:2px 7px;background:var(--yellow3);color:var(--yellow);border:1px solid var(--yellow2);border-radius:2px;cursor:pointer;letter-spacing:.5px">ALL</button>
+      <button onclick="filterNews('bull')" id="nfBull" style="font-size:7px;padding:2px 7px;background:var(--bg3);color:var(--text3);border:1px solid var(--border);border-radius:2px;cursor:pointer">▲ BULL</button>
+      <button onclick="filterNews('bear')" id="nfBear" style="font-size:7px;padding:2px 7px;background:var(--bg3);color:var(--text3);border:1px solid var(--border);border-radius:2px;cursor:pointer">▼ BEAR</button>
+      <button onclick="filterNews('high')" id="nfHigh" style="font-size:7px;padding:2px 7px;background:var(--bg3);color:var(--text3);border:1px solid var(--border);border-radius:2px;cursor:pointer">🔴 HIGH</button>
+    </div>
+
+    <!-- News list -->
+    <div id="niList" style="overflow-y:auto;flex:1;padding:0 6px 6px">
+      <div style="font-size:8px;color:var(--text3);text-align:center;padding:20px 10px;line-height:2">
+        No news loaded yet.<br>Click <strong style="color:var(--green)">Generate Signal</strong> to fetch live market news.
+      </div>
+    </div>
+
   </div>
 
 </div><!-- /RIGHT -->
@@ -1777,10 +1819,13 @@ function toggleOiView() {
 // ── MARKET CLOCK ──────────────────────────────────────────────────
 function updateMarketClock() {
   const now = new Date();
-  const h = now.getHours(), m = now.getMinutes(), s = now.getSeconds();
+  // Always show IST (UTC+5:30) — works correctly even if user is not in India
+  const utc = now.getTime() + now.getTimezoneOffset()*60000;
+  const ist = new Date(utc + 19800000);
+  const h = ist.getHours(), m = ist.getMinutes(), s = ist.getSeconds();
   const timeStr = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
   const el = document.getElementById('mktClockTime');
-  if(el) el.textContent = timeStr;
+  if(el) el.textContent = timeStr + ' IST';
   // Progress: 9:15 (555 min) to 15:30 (930 min)
   const totalMins = h*60+m;
   const sessionStart = 555, sessionEnd = 930, sessionLen = sessionEnd-sessionStart;
@@ -1789,7 +1834,8 @@ function updateMarketClock() {
   const phaseEl = document.getElementById('mktSessionPhase');
   if(fillEl) fillEl.style.width = pct + '%';
   if(phaseEl) {
-    if(totalMins < 555) phaseEl.textContent = 'PRE-MARKET';
+    if(totalMins < 540) phaseEl.textContent = 'PRE-MARKET';
+    else if(totalMins < 555) phaseEl.textContent = '🟡 OPENING IN ' + (555-totalMins) + 'min';
     else if(totalMins < 570) phaseEl.textContent = '🔴 OPENING VOLATILITY';
     else if(totalMins < 660) phaseEl.textContent = '🟢 MORNING SESSION';
     else if(totalMins < 750) phaseEl.textContent = '🟡 MID-DAY SLOW';
@@ -1798,9 +1844,9 @@ function updateMarketClock() {
     else if(totalMins <= 930) phaseEl.textContent = '⚠ LAST 30 MIN — RISKY';
     else { phaseEl.textContent = 'MARKET CLOSED'; }
   }
-  // Update journal date
+  // Update journal date (IST date)
   const jd = document.getElementById('journalDate');
-  if(jd) jd.textContent = now.toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short'});
+  if(jd) jd.textContent = ist.toLocaleDateString('en-IN',{weekday:'short',day:'2-digit',month:'short'});
 }
 setInterval(updateMarketClock, 1000);
 updateMarketClock();
@@ -2341,8 +2387,11 @@ window.addEventListener('load',()=>{
 // CLOCK
 function startClock(){
   setInterval(()=>{
-    const n=new Date();
-    document.getElementById('hdrTime').textContent=n.toTimeString().slice(0,8);
+    const now=new Date();
+    // Always use IST for market hours display
+    const utc=now.getTime()+now.getTimezoneOffset()*60000;
+    const n=new Date(utc+19800000);
+    document.getElementById('hdrTime').textContent=n.toTimeString().slice(0,8)+' IST';
     const d=n.getDay(),h=n.getHours(),m=n.getMinutes(),mins=h*60+m;
     const p=document.getElementById('mktPill');
     if(d>=1&&d<=5&&mins>=555&&mins<=930){p.className='mpill open';p.textContent='● NSE LIVE';}
@@ -2516,51 +2565,50 @@ async function connect(){
   const btn=document.getElementById('connectBtn');
   btn.innerHTML='<span class="spin">⟳</span>';btn.disabled=true;
 
-  // ── Render free tier cold start can take 30–60s ──────────────────────
-  // Strategy: ping with 60s timeout, show countdown so user knows it's working
+  // ── Railway: fast boot, 3 retries with short gaps ──────────────────
+  const maxAttempts=3;
+  const delays=[3000,6000,10000]; // Railway wakes fast
   let attempt=0;
-  const maxAttempts=4;
-  const delays=[5000,10000,15000,20000]; // retry gaps
 
-  setSt('wait','Waking up server... (Render cold start ~30s)');
+  setSt('wait','Connecting to Railway...');
 
-  while(attempt<maxAttempts){
+  while(attempt<=maxAttempts){
     try{
       const controller=new AbortController();
-      const tid=setTimeout(()=>controller.abort(),60000); // 60s total timeout
+      const tid=setTimeout(()=>controller.abort(),15000); // 15s per attempt
       const r=await fetch(`${backend}/ping`,{signal:controller.signal});
       clearTimeout(tid);
       const d=await r.json();
 
       if(d.status==='alive'||d.status==='ok'){
         connected=true;
-        setSt('ok',`CONNECTED — v${d.version||'4.0'}`);
+        setSt('ok',`CONNECTED — v${d.version||'4.0'} · Railway`);
         document.getElementById('connDot').className='cdot2 on';
-        btn.innerHTML='✓ OK';btn.disabled=false;
+        btn.innerHTML='✓ LIVE';btn.disabled=false;
         loadGift();
         loadNews();
         checkKiteStatus();
         startAutoSigLoop();
         startFiiRefresh();
         bootstrapMarketData();
-        toast('Backend connected ✓','green');
+        toast('Railway backend connected ✓','green');
         return;
       }
     }catch(e){
       attempt++;
-      if(attempt>=maxAttempts) break;
-      const waitSec=Math.round(delays[attempt]/1000);
-      setSt('wait',`Server waking up... retry ${attempt}/${maxAttempts} (wait ${waitSec}s)`);
+      if(attempt>maxAttempts) break;
+      const waitSec=Math.round(delays[attempt-1]/1000);
+      setSt('wait',`Connecting... attempt ${attempt}/${maxAttempts} (${waitSec}s)`);
       btn.innerHTML=`<span class="spin">⟳</span> ${waitSec}s`;
-      await new Promise(res=>setTimeout(res,delays[attempt]));
+      await new Promise(res=>setTimeout(res,delays[attempt-1]));
     }
   }
 
   // All retries failed
-  setSt('err','Failed — Render may be down. Try again in 60s');
+  setSt('err','Failed — Railway server may be down. Check Railway dashboard.');
   btn.innerHTML='RETRY';btn.disabled=false;
   btn.onclick=connect;
-  toast('Connection failed — server may be starting, try again','red');
+  toast('Connection failed — check Railway dashboard','red');
 }
 
 async function bootstrapMarketData(){
@@ -2627,7 +2675,7 @@ async function connectKite(){
     const r=await fetch(`${backend}/kite/login-url`);
     const d=await r.json();
     if(d.error){toast('⚠ '+d.error,'red');return;}
-    const kiteUrl=d.url||d.login_url; if(!kiteUrl){toast('No login URL — check KITE_API_KEY on Render','red');return;} window.open(kiteUrl,'_blank','width=480,height=720');
+    const kiteUrl=d.url||d.login_url; if(!kiteUrl){toast('No login URL — check KITE_API_KEY on Railway','red');return;} window.open(kiteUrl,'_blank','width=480,height=720');
     toast('Kite login window opened — login then return here','green');
     let attempts=0;
     const poll=setInterval(async()=>{
@@ -3209,14 +3257,28 @@ function renderSignal(data){
   // ── v15: OI Heatmap ──────────────────────────────────────────
   renderOIHeatmap(data.chain||[], data.option_meta||{});
   
-  // Reasons
+  // ── Signal Reasoning — Plain English v19 ────────────────────────────
   const rb = document.getElementById('rsnDiv'); rb.innerHTML='';
-  (s.top_reasons||[]).forEach(r=>{
-    const bear = /bear|sell|down|drop|fall/i.test(r);
-    const div = document.createElement('div'); div.className='rsn';
-    div.innerHTML = `<span class="rb ${bear?'bear':''}">${bear?'▼':'▲'}</span><span>${r}</span>`;
-    rb.appendChild(div);
-  });
+  const reasons = s.top_reasons || [];
+  const cls19 = s.signal_cls || 'wait';
+  const plainReasons = reasons.map(r => _toPlainEnglish(r, cls19));
+  
+  if(plainReasons.length === 0) {
+    rb.innerHTML = '<div style="font-size:8px;color:var(--text3);text-align:center;padding:10px">No signal reasons available</div>';
+  } else {
+    // Summary sentence first
+    const summaryHtml = _buildReasonSummary(s, data.option_meta||{});
+    rb.innerHTML = summaryHtml + plainReasons.map((r, i) => {
+      const isBull = r.sentiment === 'bull';
+      const isBear = r.sentiment === 'bear';
+      const dotColor = isBull ? 'var(--green)' : isBear ? 'var(--red)' : 'var(--text3)';
+      const icon = isBull ? '▲' : isBear ? '▼' : '•';
+      return `<div style="display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid var(--border);font-size:8px;line-height:1.6">
+        <span style="color:${dotColor};font-size:10px;flex-shrink:0;margin-top:1px">${icon}</span>
+        <span style="color:var(--text)">${r.text}</span>
+      </div>`;
+    }).join('') + `<div style="font-size:7px;color:var(--text3);text-align:right;padding-top:4px">${reasons.length} factors analyzed</div>`;
+  }
   
   const ct = data.can_trade||{};
   if(p && s.action!=='WAIT' && !inTrade) renderTrade(s,p);
@@ -3547,32 +3609,371 @@ function renderTrade(s, p) {
   updateEnterBtn();
 }
 
-// NEWS ENGINE
+// ── NEWS ENGINE v19 — Plain English, Indian Market Context ──────────────
+let _allImpactNews = []; // store for filter
+let _newsFilter = 'all';
+
+function filterNews(f) {
+  _newsFilter = f;
+  // Update tab styles
+  ['all','bull','bear','high'].forEach(k => {
+    const el = document.getElementById('nf'+k.charAt(0).toUpperCase()+k.slice(1));
+    if(!el) return;
+    const active = k === f;
+    el.style.background  = active ? 'var(--yellow3)' : 'var(--bg3)';
+    el.style.color       = active ? 'var(--yellow)'  : 'var(--text3)';
+    el.style.borderColor = active ? 'var(--yellow2)' : 'var(--border)';
+  });
+  _renderNewsList(_allImpactNews);
+}
+
 function renderNews(na){
-  if(!na)return;
-  const imp=na.impactful_news||[];
-  document.getElementById('nwsCnt').textContent=imp.length+' SIGNALS';
-  document.getElementById('nwsBull').textContent=na.bull_count||0;
-  document.getElementById('nwsBear').textContent=na.bear_count||0;
-  const sc=na.news_sentiment_score||0;
-  const sce=document.getElementById('nwsSc');
-  sce.textContent=(sc>0?'+':'')+sc;
-  sce.style.color=sc>0?'var(--green)':sc<0?'var(--red)':'var(--text)';
-  document.getElementById('nwsTot').textContent=na.total_news_analyzed||0;
-  const list=document.getElementById('niList');
-  if(!imp.length){list.innerHTML=`<div style="font-size:8px;color:var(--text3);text-align:center;padding:8px">No impactful news — market neutral</div>`;return;}
-  list.innerHTML=imp.slice(0,8).map(n=>{
-    const dir=(n.direction||'').toLowerCase();
-    const lvl=(n.impact_level||'LOW')[0];
-    const isc=n.impact_score||0;
-    const kws=(n.keywords||[]).map(k=>`<span class="ni-kw">${k}</span>`).join('');
-    return`<div class="ni ${lvl} ${dir}">
-      <div class="ni-top"><div class="ni-title">${n.company?'<span style="color:var(--cyan);font-size:7px">['+n.company+']</span> ':''}${(n.title||'').slice(0,80)}</div>
-      <div class="ni-right"><div class="ni-sc ${dir}">${isc>0?'+':''}${isc}</div><div class="ni-lv ${lvl} ${dir}">${n.impact_level||'LOW'}</div></div></div>
-      <div class="ni-bottom">${n.time?'<span class="ni-co">'+n.time.slice(0,16)+'</span>':''}${kws}</div></div>`;
+  if(!na) return;
+  const imp  = na.impactful_news || [];
+  const sc   = na.news_sentiment_score || 0;
+  const bull = na.bull_count || 0;
+  const bear = na.bear_count || 0;
+  const total= na.total_news_analyzed || 0;
+
+  _allImpactNews = imp; // cache for filter
+
+  // Counts
+  const nwsCnt = document.getElementById('nwsCnt');
+  if(nwsCnt) nwsCnt.textContent = imp.length + ' stories';
+  const nwsBull = document.getElementById('nwsBull');
+  if(nwsBull) nwsBull.textContent = bull;
+  const nwsBear = document.getElementById('nwsBear');
+  if(nwsBear) nwsBear.textContent = bear;
+  const sce = document.getElementById('nwsSc');
+  if(sce){ sce.textContent = (sc>0?'+':'')+sc; sce.style.color = sc>0?'var(--green)':sc<0?'var(--red)':'var(--text)'; }
+  const nwsTot = document.getElementById('nwsTot');
+  if(nwsTot) nwsTot.textContent = total;
+
+  // Net point impact bar
+  const netPts = imp.reduce((acc,n) => {
+    const dir = (n.direction||'').toLowerCase();
+    const lvl = (n.impact_level||'LOW');
+    const w = lvl==='HIGH'?5:lvl==='MEDIUM'?2:1;
+    return acc + (dir==='bull'?w:dir==='bear'?-w:0);
+  }, 0);
+  const maxPts = Math.max(10, Math.abs(netPts)*1.5);
+  const piPos = document.getElementById('piPos');
+  const piNeg = document.getElementById('piNeg');
+  const piVal = document.getElementById('piVal');
+  if(piPos) piPos.style.width = (netPts>0 ? Math.min(50,(netPts/maxPts)*50) : 0)+'%';
+  if(piNeg) piNeg.style.width = (netPts<0 ? Math.min(50,(Math.abs(netPts)/maxPts)*50) : 0)+'%';
+  if(piVal){
+    piVal.textContent = netPts!==0 ? `${netPts>0?'+':''}${netPts} pts` : 'NEUTRAL';
+    piVal.className = `pi-value ${netPts>0?'pos':netPts<0?'neg':'neutral'}`;
+  }
+
+  // Mood line — plain English
+  const moodEl = document.getElementById('nwsMoodLine');
+  if(moodEl) {
+    let mood, moodColor='var(--text2)', moodBorder='var(--border)';
+    if(!imp.length) {
+      mood = 'No major news today — market likely to follow technical levels only';
+    } else if(sc >= 8) {
+      mood = '🟢 News strongly bullish — buying pressure expected across the board';
+      moodColor='var(--green)'; moodBorder='var(--green2)';
+    } else if(sc >= 3) {
+      mood = '🟢 Positive news flow — mild tailwind for markets, bulls have the edge';
+      moodColor='var(--green2)'; moodBorder='var(--green2)';
+    } else if(sc <= -8) {
+      mood = '🔴 News strongly bearish — heavy selling pressure likely, be cautious';
+      moodColor='var(--red)'; moodBorder='var(--red2)';
+    } else if(sc <= -3) {
+      mood = '🔴 Negative news flow — markets may face resistance on any rise';
+      moodColor='var(--red2)'; moodBorder='var(--red2)';
+    } else {
+      mood = '🟡 Mixed signals from news — no clear bias, trade what price shows you';
+      moodColor='var(--yellow)'; moodBorder='var(--yellow2)';
+    }
+    moodEl.textContent = mood;
+    moodEl.style.color = moodColor;
+    moodEl.style.borderLeftColor = moodBorder;
+  }
+
+  _newsFilter = 'all';
+  // Reset tab styles
+  ['all','bull','bear','high'].forEach(k => {
+    const el = document.getElementById('nf'+k.charAt(0).toUpperCase()+k.slice(1));
+    if(!el) return;
+    const active = k==='all';
+    el.style.background  = active?'var(--yellow3)':'var(--bg3)';
+    el.style.color       = active?'var(--yellow)':'var(--text3)';
+    el.style.borderColor = active?'var(--yellow2)':'var(--border)';
+  });
+  _renderNewsList(imp);
+}
+
+function _renderNewsList(imp) {
+  const list = document.getElementById('niList');
+  if(!list) return;
+
+  // Apply filter
+  let items = imp;
+  if(_newsFilter === 'bull') items = imp.filter(n=>(n.direction||'').toLowerCase()==='bull');
+  else if(_newsFilter === 'bear') items = imp.filter(n=>(n.direction||'').toLowerCase()==='bear');
+  else if(_newsFilter === 'high') items = imp.filter(n=>(n.impact_level||'').toUpperCase()==='HIGH');
+
+  if(!items.length) {
+    list.innerHTML = `<div style="font-size:8px;color:var(--text3);text-align:center;padding:20px 10px;line-height:2">
+      ${imp.length===0?'No high-impact news found.<br>Market is trading on technicals only.':'No '+_newsFilter+' news matching this filter.'}
+    </div>`;
+    return;
+  }
+
+  list.innerHTML = items.slice(0,12).map(n => {
+    const dir   = (n.direction||'').toLowerCase();
+    const lvl   = (n.impact_level||'LOW');
+    const lvlK  = lvl[0]; // H M L
+    const isc   = n.impact_score || 0;
+    const isBull= dir==='bull', isBear=dir==='bear';
+    const isHigh= lvlK==='H', isMed=lvlK==='M';
+
+    // Colors
+    const accent   = isBull?(isHigh?'var(--green)':'var(--green2)'):isBear?(isHigh?'var(--red)':'var(--red2)'):'var(--border)';
+    const bg       = isBull?(isHigh?'rgba(0,240,124,.07)':'rgba(0,240,124,.03)'):isBear?(isHigh?'rgba(255,58,92,.07)':'rgba(255,58,92,.03)'):'var(--bg3)';
+    const scoreClr = isBull?'var(--green)':isBear?'var(--red)':'var(--text2)';
+    const arrow    = isBull?'▲':isBear?'▼':'—';
+
+    // Level badge
+    const lvlTxt = isHigh?'🔴 HIGH IMPACT':isMed?'🟡 MEDIUM':'⚪ LOW';
+
+    // Points
+    const pts = isHigh?(isBull?'+5':isBear?'-5':'0'):isMed?(isBull?'+2':isBear?'-2':'0'):(isBull?'+1':isBear?'-1':'0');
+
+    // Plain English explanation
+    const plain = _newsImpactPhrase(n, dir, lvl, isc);
+
+    // Time
+    const timeStr = n.time ? _formatNewsTime(n.time) : '';
+
+    return `<div style="background:${bg};border-left:3px solid ${accent};border-radius:3px;padding:8px 10px;margin-bottom:5px;cursor:default" title="${(n.title||'')}">
+      <!-- Row 1: company + level badge + time -->
+      <div style="display:flex;align-items:center;gap:5px;margin-bottom:4px">
+        ${n.company?`<span style="font-size:7px;color:var(--cyan);font-weight:700">${n.company}</span>`:''}
+        <span style="font-size:6px;color:${isHigh?'#000':isMed?'var(--yellow)':'var(--text3)'};background:${isHigh?accent:isMed?'var(--yellow3)':'var(--bg)'};border-radius:2px;padding:1px 5px;font-weight:700">${lvlTxt}</span>
+        <span style="margin-left:auto;font-size:6px;color:var(--text3)">${timeStr}</span>
+        <span style="font-size:8px;font-weight:700;color:${scoreClr};background:${isBull?'var(--green3)':isBear?'var(--red3)':'var(--bg)'};border:1px solid ${accent};border-radius:2px;padding:1px 5px">${arrow} ${pts} pts</span>
+      </div>
+      <!-- Row 2: headline -->
+      <div style="font-size:9px;color:var(--text);line-height:1.55;margin-bottom:5px;font-weight:${isHigh?'600':'400'}">${(n.title||'').slice(0,100)}</div>
+      <!-- Row 3: plain English what this means -->
+      <div style="font-size:8px;color:${scoreClr};line-height:1.5;padding:4px 7px;background:rgba(255,255,255,.02);border-radius:2px;border-top:1px solid ${accent}22">${plain}</div>
+    </div>`;
   }).join('');
 }
 
+// Plain English impact phrase generator
+function _newsImpactPhrase(n, dir, lvl, isc) {
+  const isHigh = lvl[0] === 'H';
+  const company = n.company || '';
+  const kws = (n.keywords || []).slice(0,3).join(', ').toLowerCase();
+
+  if(dir === 'bull') {
+    if(isHigh) {
+      if(kws.includes('fii') || kws.includes('foreign')) return '💡 Foreign investors are buying — this is bullish for markets';
+      if(kws.includes('gdp') || kws.includes('growth')) return '💡 Strong economic data — business conditions improving';
+      if(kws.includes('rbi') || kws.includes('rate cut') || kws.includes('policy')) return '💡 RBI policy is supportive — cheaper loans boost markets';
+      if(kws.includes('result') || kws.includes('profit') || kws.includes('earnings')) return `💡 ${company||'Company'} reported good results — sector likely to rise`;
+      if(kws.includes('budget') || kws.includes('government') || kws.includes('reform')) return '💡 Government policy is market-friendly — positive sentiment';
+      if(kws.includes('global') || kws.includes('us market') || kws.includes('fed')) return '💡 Global markets are positive — Nifty likely to open higher';
+      return `💡 This is positive news — likely to push ${company||'markets'} higher`;
+    }
+    if(kws.includes('order') || kws.includes('contract') || kws.includes('win')) return `✅ ${company||'Company'} won a new order — good for stock, mild market positive`;
+    if(kws.includes('upgrade') || kws.includes('target') || kws.includes('buy')) return `✅ Analysts are bullish on ${company||'this stock'} — sector may see buying`;
+    return `✅ Mildly positive news — small upward push expected`;
+  }
+
+  if(dir === 'bear') {
+    if(isHigh) {
+      if(kws.includes('fii') || kws.includes('selling')) return '⚠️ Foreign investors selling — this puts downward pressure on markets';
+      if(kws.includes('inflation') || kws.includes('cpi') || kws.includes('wpi')) return '⚠️ High inflation hurts buying power — RBI may tighten rates';
+      if(kws.includes('rate hike') || kws.includes('hawkish')) return '⚠️ Higher interest rates are coming — expensive loans hurt markets';
+      if(kws.includes('result') || kws.includes('loss') || kws.includes('miss')) return `⚠️ ${company||'Company'} missed expectations — sector may see selling`;
+      if(kws.includes('global') || kws.includes('crash') || kws.includes('war') || kws.includes('geopolit')) return '⚠️ Global uncertainty is rising — investors becoming cautious';
+      if(kws.includes('rupee') || kws.includes('dollar') || kws.includes('currency')) return '⚠️ Weak rupee increases import costs — negative for many sectors';
+      return `⚠️ This is negative news — likely to push ${company||'markets'} lower`;
+    }
+    if(kws.includes('downgrade') || kws.includes('sell')) return `❌ Analysts turned cautious on ${company||'this stock'} — watch for dip`;
+    if(kws.includes('delay') || kws.includes('miss') || kws.includes('below')) return `❌ ${company||'Company'} underperformed — mild selling pressure expected`;
+    return `❌ Mildly negative news — small downward pressure expected`;
+  }
+
+  // Neutral
+  if(kws.includes('result') || kws.includes('quarterly')) return `ℹ️ ${company||'Company'} results in line with expectations — no big move likely`;
+  if(kws.includes('rbi') || kws.includes('policy')) return 'ℹ️ RBI held rates steady — markets already priced in, wait and watch';
+  return 'ℹ️ Neutral development — market direction depends on other factors';
+}
+
+// Human-readable time formatter
+function _formatNewsTime(timeStr) {
+  try {
+    const d = new Date(timeStr);
+    if(isNaN(d.getTime())) return timeStr.slice(0,16);
+    const now = new Date();
+    const diffMin = Math.round((now - d) / 60000);
+    if(diffMin < 1)  return 'just now';
+    if(diffMin < 60) return `${diffMin}m ago`;
+    const diffHr = Math.round(diffMin/60);
+    if(diffHr < 24)  return `${diffHr}h ago`;
+    return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short'});
+  } catch(e) { return timeStr.slice(0,10); }
+}
+
+// Quick refresh news function
+async function refreshNews() {
+  if(!connected){ toast('Connect backend first','red'); return; }
+  try {
+    const r = await fetch(`${backend}/market-news`);
+    const d = await r.json();
+    if(d.news_analysis) { renderNews(d.news_analysis); toast('News refreshed ✓','green'); }
+    else if(d.news && d.news.length) { setTicker(d.news, false); toast('Ticker updated ✓','green'); }
+  } catch(e) { toast('News refresh failed','red'); }
+}
+
+
+
+
+
+
+// ── PLAIN ENGLISH SIGNAL REASON CONVERTER — v19 ─────────────────────────
+// Converts raw engine reason strings into clear trader-friendly language
+function _toPlainEnglish(reason, signalCls) {
+  const r = reason.toLowerCase();
+  let text = reason; // fallback = original
+  let sentiment = signalCls === 'bull' ? 'bull' : signalCls === 'bear' ? 'bear' : 'neutral';
+
+  // Trend engine reasons
+  if(/ema.*bullish|price.*above.*ema|uptrend|bullish.*trend|moving average.*up/i.test(reason))
+    { text = 'Price is above its moving averages — trend is pointing upward'; sentiment='bull'; }
+  else if(/ema.*bearish|price.*below.*ema|downtrend|bearish.*trend|moving average.*down/i.test(reason))
+    { text = 'Price is below its moving averages — trend is pointing downward'; sentiment='bear'; }
+  else if(/rsi.*overbought|rsi.*above.*70/i.test(reason))
+    { text = 'RSI is above 70 — stock is overbought, be careful buying here'; sentiment='bear'; }
+  else if(/rsi.*oversold|rsi.*below.*30/i.test(reason))
+    { text = 'RSI is below 30 — stock is oversold, good zone for reversal upside'; sentiment='bull'; }
+  else if(/rsi.*bullish|rsi.*momentum/i.test(reason))
+    { text = 'Momentum indicator (RSI) is showing bullish strength'; sentiment='bull'; }
+  else if(/rsi.*bearish/i.test(reason))
+    { text = 'Momentum indicator (RSI) is showing weakness'; sentiment='bear'; }
+  else if(/macd.*bullish|macd.*crossover.*bull|macd.*above/i.test(reason))
+    { text = 'MACD (trend momentum tool) has given a buy signal'; sentiment='bull'; }
+  else if(/macd.*bearish|macd.*crossover.*bear|macd.*below/i.test(reason))
+    { text = 'MACD (trend momentum tool) has given a sell signal'; sentiment='bear'; }
+  else if(/breakout|break.*resistance/i.test(reason))
+    { text = 'Price broke above a key resistance level — bulls are in control'; sentiment='bull'; }
+  else if(/breakdown|break.*support/i.test(reason))
+    { text = 'Price broke below a support level — bears are in control'; sentiment='bear'; }
+  // OI / Options reasons
+  else if(/pcr.*bull|pcr.*high|put.*call.*ratio.*bull/i.test(reason))
+    { text = 'More puts are being written than calls — market makers expecting markets to hold up'; sentiment='bull'; }
+  else if(/pcr.*bear|pcr.*low|put.*call.*ratio.*bear/i.test(reason))
+    { text = 'More calls are being written — market makers expecting resistance ahead'; sentiment='bear'; }
+  else if(/call.*unwinding|ce.*short.*cover/i.test(reason))
+    { text = 'Big traders are closing their bearish bets (call writing) — positive sign'; sentiment='bull'; }
+  else if(/put.*unwinding|pe.*short.*cover/i.test(reason))
+    { text = 'Big traders are closing their bullish bets (put writing) — negative sign'; sentiment='bear'; }
+  else if(/max.*pain.*below|spot.*above.*max.*pain/i.test(reason))
+    { text = 'Price is above Max Pain — gravity may pull it lower toward expiry'; sentiment='bear'; }
+  else if(/max.*pain.*above|spot.*below.*max.*pain/i.test(reason))
+    { text = 'Price is below Max Pain — gravity may push it higher toward expiry'; sentiment='bull'; }
+  else if(/high.*oi.*call|resistance.*call.*oi/i.test(reason))
+    { text = 'Heavy call writing at this level — strong resistance above current price'; sentiment='bear'; }
+  else if(/high.*oi.*put|support.*put.*oi/i.test(reason))
+    { text = 'Heavy put writing at this level — strong support below current price'; sentiment='bull'; }
+  // Gamma / Volatility
+  else if(/gamma.*positive|gamma.*bull/i.test(reason))
+    { text = 'Options market gamma is positive — small moves get amplified upward'; sentiment='bull'; }
+  else if(/gamma.*negative|gamma.*bear/i.test(reason))
+    { text = 'Options market gamma is negative — market makers selling into rallies'; sentiment='bear'; }
+  else if(/vix.*low|volatility.*low|iv.*low/i.test(reason))
+    { text = 'Market volatility (VIX) is low — calm market, options are cheap to buy'; sentiment='bull'; }
+  else if(/vix.*high|volatility.*high|iv.*high/i.test(reason))
+    { text = 'Market volatility (VIX) is high — options are expensive, risk is elevated'; sentiment='bear'; }
+  else if(/vix.*falling|volatility.*declining/i.test(reason))
+    { text = 'VIX is falling — fear is reducing, market likely to stabilize or rise'; sentiment='bull'; }
+  else if(/vix.*rising|volatility.*rising/i.test(reason))
+    { text = 'VIX is rising — fear is increasing, markets may fall further'; sentiment='bear'; }
+  // FII / DII
+  else if(/fii.*buy|foreign.*buy|fii.*positive/i.test(reason))
+    { text = 'Foreign investors (FII) are buying Indian stocks — strong bullish signal'; sentiment='bull'; }
+  else if(/fii.*sell|foreign.*sell|fii.*negative/i.test(reason))
+    { text = 'Foreign investors (FII) are selling Indian stocks — bearish pressure'; sentiment='bear'; }
+  else if(/dii.*buy|domestic.*buy/i.test(reason))
+    { text = 'Domestic institutions (MFs, LIC etc.) are buying — supporting markets'; sentiment='bull'; }
+  // Regime
+  else if(/trending.*market|strong.*trend/i.test(reason))
+    { text = 'Market is in a trending phase — momentum trades work well here'; sentiment=signalCls==='bear'?'bear':'bull'; }
+  else if(/sideways|range.*bound|choppy|no.*trend/i.test(reason))
+    { text = 'Market is moving sideways — avoid momentum trades, keep targets small'; sentiment='neutral'; }
+  else if(/reversal.*signal|trend.*change|regime.*change/i.test(reason))
+    { text = 'Signals suggest a possible trend reversal — be cautious with direction'; sentiment='neutral'; }
+  // Sentiment
+  else if(/bullish.*sentiment|positive.*sentiment/i.test(reason))
+    { text = 'Overall market mood is positive — traders are optimistic'; sentiment='bull'; }
+  else if(/bearish.*sentiment|negative.*sentiment/i.test(reason))
+    { text = 'Overall market mood is negative — traders are cautious'; sentiment='bear'; }
+  // Generic fallback cleanup
+  else {
+    // Clean up common jargon
+    text = reason
+      .replace(/EMA/g,'Moving Average')
+      .replace(/RSI/g,'Momentum (RSI)')
+      .replace(/MACD/g,'Trend Signal (MACD)')
+      .replace(/PCR/g,'Put-Call Ratio')
+      .replace(/OI/g,'Open Interest')
+      .replace(/VIX/g,'Volatility Index')
+      .replace(/ATM/g,'At-the-Money')
+      .replace(/ITM/g,'In-the-Money')
+      .replace(/OTM/g,'Out-of-the-Money')
+      .replace(/FII/g,'Foreign Investors')
+      .replace(/DII/g,'Domestic Institutions')
+      .replace(/CE/g,'Call Option')
+      .replace(/PE/g,'Put Option');
+    // Detect sentiment
+    sentiment = /bull|up|buy|positive|rise|above|support|call.*unwind/i.test(reason) ? 'bull' :
+                /bear|down|sell|negative|fall|below|resist|put.*unwind/i.test(reason) ? 'bear' : 'neutral';
+  }
+
+  return { text, sentiment };
+}
+
+// Build a one-line summary at the top of the reasoning section
+function _buildReasonSummary(s, meta) {
+  const cls = s.signal_cls || 'wait';
+  const conf = s.confidence || 0;
+  const composite = s.composite || 0;
+  const spot = meta?.spot || 0;
+  const pcr = meta?.pcr || 0;
+  const vix = meta?.vix || 0;
+
+  if(cls === 'wait') {
+    return `<div style="padding:6px 8px;background:var(--bg3);border-radius:3px;border-left:3px solid var(--yellow);margin-bottom:8px;font-size:8px;color:var(--text2);line-height:1.7">
+      ⏸ <strong>No clear signal right now.</strong> The market is moving sideways or sending mixed signals.
+      ${pcr>0?` PCR is ${pcr.toFixed(2)} (${pcr>1.2?'bullish':pcr<0.8?'bearish':'neutral'}).`:''}
+      Wait for a clearer direction before entering any trade.
+    </div>`;
+  }
+
+  const dirWord = cls === 'bull' ? 'going UP' : 'going DOWN';
+  const optionWord = cls === 'bull' ? 'CALL (CE)' : 'PUT (PE)';
+  const confWord = conf >= 75 ? 'strong' : conf >= 55 ? 'moderate' : 'weak';
+  const confColor = conf >= 75 ? 'var(--green)' : conf >= 55 ? 'var(--yellow)' : 'var(--red)';
+  const borderColor = cls === 'bull' ? 'var(--green)' : 'var(--red)';
+  const bg = cls === 'bull' ? 'rgba(0,240,124,.05)' : 'rgba(255,58,92,.05)';
+
+  let summaryLine = `${s.bull_count||0} out of ${Object.keys(s.engines||{}).length} analysis engines say market is ${dirWord}.`;
+  if(vix>0) summaryLine += ` Volatility (VIX) is ${vix>20?'high at '+vix.toFixed(1):vix>14?'moderate at '+vix.toFixed(1):'low at '+vix.toFixed(1)}.`;
+  summaryLine += ` Buy <strong>${optionWord}</strong> — ${confWord} confidence.`;
+
+  return `<div style="padding:8px 10px;background:${bg};border-radius:3px;border-left:3px solid ${borderColor};margin-bottom:8px;font-size:8px;color:var(--text);line-height:1.8">
+    ${summaryLine}
+    <div style="font-size:7px;color:var(--text2);margin-top:3px">Reasons below explain <em>why</em> the engines are saying this:</div>
+  </div>`;
+}
 
 // OI TABLE — full chain store for expiry switching
 let _oiFullChain = [], _oiMeta = {}, _oiSelectedExpiry = '';
@@ -4569,84 +4970,11 @@ const _origReadCfg = readCfg;
 // readCfg already returns idx; we also need to pass expiry in payload
 
 // ══════════════════════════════════════════════════════════
-//  V7 — ENHANCED NEWS IMPACT RENDERING
+//  V7 — NEWS RENDERING: now delegates to unified renderNews (v19)
 // ══════════════════════════════════════════════════════════
+function renderNewsV7(na) { renderNews(na); }
 
-function renderNewsV7(na) {
-  if (!na) return;
-  const imp = na.impactful_news || [];
-  const sc  = na.news_sentiment_score || 0;
-  const bull = na.bull_count || 0;
-  const bear = na.bear_count || 0;
-
-  // Update counts
-  document.getElementById('nwsCnt').textContent = imp.length + ' SIGNALS';
-  document.getElementById('nwsBull').textContent = bull;
-  document.getElementById('nwsBear').textContent = bear;
-  const scEl = document.getElementById('nwsSc');
-  if (scEl) { scEl.textContent = (sc > 0 ? '+' : '') + sc; scEl.style.color = sc>0?'var(--green)':sc<0?'var(--red)':'var(--text2)'; }
-  document.getElementById('nwsTot').textContent = na.total_news_analyzed || 0;
-
-  // NET POINT IMPACT bar
-  // Estimate net point impact: +5 per HIGH bull, +2 per MEDIUM bull, -5 per HIGH bear, etc.
-  const netPts = imp.reduce((acc, n) => {
-    const dir = (n.direction || '').toLowerCase();
-    const lvl = (n.impact_level || 'LOW');
-    const weight = lvl === 'HIGH' ? 5 : lvl === 'MEDIUM' ? 2 : 1;
-    return acc + (dir === 'bull' ? weight : dir === 'bear' ? -weight : 0);
-  }, 0);
-  const maxPts = Math.max(10, Math.abs(netPts) * 1.5);
-  const piPos = document.getElementById('piPos');
-  const piNeg = document.getElementById('piNeg');
-  const piVal = document.getElementById('piVal');
-  if (piPos) piPos.style.width = (netPts > 0 ? Math.min(50, (netPts/maxPts)*50) : 0) + '%';
-  if (piNeg) piNeg.style.width = (netPts < 0 ? Math.min(50, (Math.abs(netPts)/maxPts)*50) : 0) + '%';
-  if (piVal) {
-    const sign = netPts > 0 ? '+' : '';
-    piVal.textContent = netPts !== 0 ? `${sign}${netPts} pts` : 'NEUTRAL';
-    piVal.className = `pi-value ${netPts > 0 ? 'pos' : netPts < 0 ? 'neg' : 'neutral'}`;
-  }
-
-  // Render impact items
-  const list = document.getElementById('niList');
-  if (!imp.length) {
-    list.innerHTML = '<div style="font-size:8px;color:var(--text3);text-align:center;padding:14px">No impactful news — market neutral on news front</div>';
-    return;
-  }
-
-  list.innerHTML = imp.slice(0, 8).map(n => {
-    const dir = (n.direction || '').toLowerCase();
-    const lvl = (n.impact_level || 'LOW');
-    const isc = n.impact_score || 0;
-    const pts = lvl === 'HIGH' ? (dir==='bull'?'+5':dir==='bear'?'-5':'0') : lvl === 'MEDIUM' ? (dir==='bull'?'+2':dir==='bear'?'-2':'0') : (dir==='bull'?'+1':dir==='bear'?'-1':'0');
-    const pillCls = dir === 'bull' ? 'pos' : dir === 'bear' ? 'neg' : 'neutral';
-    const pillIcon = dir === 'bull' ? '▲' : dir === 'bear' ? '▼' : '—';
-    const kws = (n.keywords || []).slice(0, 4).map(k => `<span class="ni-kw">${k}</span>`).join('');
-    const company = n.company ? `<span style="color:var(--cyan);font-size:7px;font-weight:700">[${n.company}]</span> ` : '';
-    const time = n.time ? n.time.slice(0, 16) : '';
-    return `<div class="ni-impact-item">
-      <div class="ni-impact-pill ${pillCls}">${pillIcon}<br><span style="font-size:7px">${pts}</span></div>
-      <div class="ni-impact-body">
-        <div class="ni-impact-title">${company}${(n.title||'').slice(0,90)}</div>
-        <div class="ni-impact-meta">
-          <span class="ni-pts ${pillCls}">${pts} pts</span>
-          <span class="ni-impact-level ${lvl}">${lvl}</span>
-          ${time?`<span class="ni-time">${time}</span>`:''}
-        </div>
-        <div class="ni-kw-row">${kws}</div>
-      </div>
-    </div>`;
-  }).join('');
-}
-
-// ── renderSignal now calls expiry + news directly (no monkey-patch needed) ──
-// injectExpiriesFromSignal and renderNewsV7 are called from applyLatestSignal and runEngines
-
-// ── Override renderNews to use V7 version ──
-if(typeof renderNews === 'function'){
-  const _origRenderNews = renderNews;
-  renderNews = function(na) { renderNewsV7(na); };
-}
+// ── renderNews is now the single source of truth — no override needed ──
 
 // ── init segment on load ──
 window.addEventListener('load', () => {
@@ -4784,8 +5112,8 @@ function toast(msg,col){
 // Check Kite status every 10s
 setInterval(()=>{if(connected)checkKiteStatus();},10000);
 
-// ── KEEP-ALIVE: ping every 4min so Render never sleeps ───────────────────
-// Render free tier sleeps after 15min inactivity — this prevents that
+// ── KEEP-ALIVE: ping every 4min to keep Railway alive ───────────────────
+// Railway sleeps after inactivity — this prevents that
 setInterval(()=>{
   if(!connected)return;
   fetch(`${backend}/ping`,{signal:AbortSignal.timeout(5000)}).catch(()=>{});
@@ -4852,35 +5180,104 @@ window.addEventListener('resize',()=>{
   if(sessionPnlHistory.length>1)drawSparkline('sessionSpark',sessionPnlHistory);
 });
 
-// ══ V15 INIT ══════════════════════════════════════════════════════
+// ══ V18 INIT ══════════════════════════════════════════════════════
 window.addEventListener('load', () => {
-  // Set initial mode
   setTradeMode('scalp');
-  // Set journal date
   updateMarketClock();
-  // Mark loading complete
   const loadSub = document.querySelector('.load-sub');
-  if(loadSub) loadSub.textContent = 'v15 · TRADER-FIRST · GREEKS · ENTRY TIMING · OI HEATMAP';
-  // Hide greeks card until we have data
+  if(loadSub) loadSub.textContent = 'v18 · RAILWAY · TRADER-FIRST · GREEKS · ENTRY TIMING · OI HEATMAP';
   const gc = document.getElementById('greeksCard');
   if(gc) gc.style.display = 'none';
 }, true);
 
-// Show greeks only when signal is available
-const _v15_origRenderSignal = typeof renderSignal === 'function' ? renderSignal : null;
-// After renderSignal runs, show greeks card
-const _v15_sigHook = () => {
+// ── IST-AWARE market open check ──────────────────────────────────────────
+// Override isMarketOpen to use IST regardless of user's local timezone
+function isMarketOpen(){
+  const now = new Date();
+  // Convert to IST (UTC+5:30)
+  const utc = now.getTime() + now.getTimezoneOffset()*60000;
+  const ist = new Date(utc + 19800000); // +5h30m
+  const day = ist.getDay();
+  if(day===0||day===6) return false;
+  const mins = ist.getHours()*60 + ist.getMinutes();
+  return mins >= 555 && mins <= 930; // 9:15 – 15:30 IST
+}
+
+// ── AUTO-RECONNECT: if Railway drops, try every 30s ──────────────────────
+let _reconnectTimer = null;
+setInterval(async () => {
+  if(!connected) return;
+  try {
+    const r = await fetch(`${backend}/ping`, {signal: AbortSignal.timeout(5000)});
+    if(!r.ok) throw new Error('not ok');
+    // Reset any stale error state
+  } catch(e) {
+    // Railway dropped — mark disconnected, attempt reconnect
+    connected = false;
+    document.getElementById('connDot').className = 'cdot2';
+    setSt('err', 'Railway disconnected — reconnecting...');
+    toast('Railway connection lost — attempting reconnect', 'red');
+    // Auto-reconnect after 10s
+    clearTimeout(_reconnectTimer);
+    _reconnectTimer = setTimeout(() => { connect(); }, 10000);
+  }
+}, 30000);
+
+// ── ENTRY TIMING ALERT: notify when score crosses 60 (ENTER zone) ────────
+let _lastEntryScore = 0;
+const _origComputeEntryTiming = computeEntryTiming;
+computeEntryTiming = function(s, p, meta) {
+  const et = _origComputeEntryTiming(s, p, meta);
+  if(et && notifEnabled) {
+    if(_lastEntryScore < 60 && et.score >= 60) {
+      // Crossed into ENTER zone
+      const action = s.signal_cls === 'bull' ? 'BUY CE' : 'BUY PE';
+      try {
+        new Notification(`⚡ ENTRY TIMING: ${et.score}/100`, {
+          body: `Score crossed 60 — ${action} setup confirmed. Check QUANTRA BEAST.`,
+          tag: 'entry-timing'
+        });
+      } catch(e){}
+      playBeep(s.signal_cls);
+    }
+  }
+  if(et) _lastEntryScore = et.score;
+  return et;
+};
+
+// ── GREEKS VISIBILITY HOOK ────────────────────────────────────────────────
+const _v18_sigHook = () => {
   const gc = document.getElementById('greeksCard');
   if(gc && lastSig?.signal_cls !== 'wait') gc.style.display = '';
 };
-// Hook into generateSignal completion
-const _v15_origGenSignal = typeof generateSignal === 'function' ? generateSignal : null;
-if(_v15_origGenSignal) {
+const _v18_origGenSignal = typeof generateSignal === 'function' ? generateSignal : null;
+if(_v18_origGenSignal) {
   generateSignal = async function() {
-    await _v15_origGenSignal();
-    setTimeout(_v15_sigHook, 500);
+    await _v18_origGenSignal();
+    setTimeout(_v18_sigHook, 500);
   };
 }
+
+// ── BACKEND URL: update header badge on connect ───────────────────────────
+const _v18_origConnect = typeof connect === 'function' ? connect : null;
+// Show Railway badge in header when connected
+const _origSetSt = setSt;
+setSt = function(cls, txt) {
+  _origSetSt(cls, txt);
+  const badge = document.getElementById('kiteBadgeHdr');
+  if(badge && cls === 'ok') {
+    // Add Railway indicator next to KITE badge
+    const railBadge = document.getElementById('railwayBadge') || (() => {
+      const b = document.createElement('div');
+      b.id = 'railwayBadge';
+      b.style.cssText = 'font-size:7px;color:#a0ff70;background:rgba(160,255,112,.1);border:1px solid rgba(160,255,112,.3);padding:2px 7px;border-radius:2px;letter-spacing:1px;flex-shrink:0;';
+      b.textContent = '🚂 RAILWAY';
+      badge.parentNode.insertBefore(b, badge.nextSibling);
+      return b;
+    })();
+  }
+};
+
 
 </script>
 </body>
