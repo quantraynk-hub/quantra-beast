@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QUANTRA BEAST v19 — NSE/Kite | Trader-First Design | Greeks | Entry Timing | OI Heatmap</title>
+<title>QUANTRA BEAST v22 — NSE/Kite | Trader-First Design | Greeks | Entry Timing | OI Heatmap</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <style>
@@ -973,7 +973,7 @@ canvas.spark{display:block;width:100%;height:100%;}
   <div class="ticker-lbl">⚡ MARKET IMPACT</div>
   <div class="ticker-track">
     <div class="ticker-scroll" id="tickerScroll">
-      <span class="ti"><span class="itxt">Connecting to QUANTRA BEAST v19 — Kite powered...</span></span>
+      <span class="ti"><span class="itxt">Connecting to QUANTRA BEAST v22 — Kite powered...</span></span>
     </div>
   </div>
 </div>
@@ -999,6 +999,7 @@ canvas.spark{display:block;width:100%;height:100%;}
   </div>
   <div class="hright">
     <button class="btn by btn-sm" id="notifBtn" onclick="requestNotifPerm()">🔔 ALERTS</button>
+    <button class="btn btn-sm" onclick="showGuide()" style="background:rgba(0,240,255,.12);border:1px solid rgba(0,240,255,.3);color:var(--cyan);font-size:7px;letter-spacing:1px">❓ HOW TO USE</button>
     <div class="mpill closed" id="mktPill">○ CLOSED</div>
     <div class="cdot2" id="connDot"></div>
     <div class="htime" id="hdrTime">--:--:--</div>
@@ -1007,7 +1008,265 @@ canvas.spark{display:block;width:100%;height:100%;}
 
 <div class="main">
 
-<!-- ════ LEFT PANE ════ -->
+<!-- ════ HOW TO USE GUIDE MODAL ════ -->
+<div id="guideModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.88);backdrop-filter:blur(6px);overflow-y:auto;padding:20px 10px">
+  <div style="max-width:780px;margin:0 auto;font-family:'Inter',sans-serif">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+      <div>
+        <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:900;color:var(--cyan);letter-spacing:3px">HOW TO USE QUANTRA BEAST</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:3px;letter-spacing:1px">Complete guide · From setup to trade execution</div>
+      </div>
+      <button onclick="closeGuide()" style="background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:8px 16px;border-radius:4px;cursor:pointer;font-size:11px">✕ CLOSE</button>
+    </div>
+
+    <!-- STEP 1: Setup -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;overflow:hidden">
+      <div style="background:rgba(0,240,255,.08);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px">
+        <div style="width:26px;height:26px;background:var(--cyan);color:#000;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;flex-shrink:0">1</div>
+        <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;color:var(--cyan);letter-spacing:2px">CONNECT & SETUP</div>
+      </div>
+      <div style="padding:14px;display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <div style="font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:1px;margin-bottom:6px">STEP BY STEP</div>
+          <div style="font-size:8.5px;color:var(--text2);line-height:2">
+            ① Open this dashboard in your browser<br>
+            ② The backend URL is already set (Railway server)<br>
+            ③ Click the green <strong style="color:var(--green)">GO</strong> button — wait 3–5 seconds<br>
+            ④ Header shows <strong style="color:var(--green)">● CONNECTED</strong> when ready<br>
+            ⑤ Open Zerodha Kite in another tab — log in<br>
+            ⑥ Come back here — live prices start flowing
+          </div>
+        </div>
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:10px">
+          <div style="font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:1px;margin-bottom:8px">CONFIGURE YOUR TRADE</div>
+          <div style="font-size:8px;color:var(--text2);line-height:2">
+            <span style="color:var(--cyan)">NIFTY / BANK / FIN / MID</span> — pick your index<br>
+            <span style="color:var(--cyan)">CAPITAL</span> — how much money you're risking total<br>
+            <span style="color:var(--cyan)">RISK %</span> — % you're OK losing per trade (suggest 1–2%)<br>
+            <span style="color:var(--cyan)">REWARD:RISK</span> — target = 2× or 2.5× your risk<br>
+            <span style="color:var(--cyan)">EXPIRY</span> — always pick NEAREST WEEKLY
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 2: Where prices come from -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;overflow:hidden">
+      <div style="background:rgba(0,240,124,.08);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px">
+        <div style="width:26px;height:26px;background:var(--green);color:#000;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;flex-shrink:0">2</div>
+        <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;color:var(--green);letter-spacing:2px">WHERE DO PRICES COME FROM?</div>
+      </div>
+      <div style="padding:14px">
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+          <div style="background:var(--bg3);border:1px solid var(--green2);border-radius:4px;padding:10px;text-align:center">
+            <div style="font-size:16px;margin-bottom:4px">🟢</div>
+            <div style="font-size:9px;font-weight:700;color:var(--green)">KITE WEBSOCKET</div>
+            <div style="font-size:7.5px;color:var(--text2);margin-top:4px;line-height:1.6">Best source. Prices update every 1–2 seconds directly from NSE. Requires Kite login.</div>
+          </div>
+          <div style="background:var(--bg3);border:1px solid rgba(0,120,255,.3);border-radius:4px;padding:10px;text-align:center">
+            <div style="font-size:16px;margin-bottom:4px">🔵</div>
+            <div style="font-size:9px;font-weight:700;color:#4a9eff">KITE REST API</div>
+            <div style="font-size:7.5px;color:var(--text2);margin-top:4px;line-height:1.6">Good source. Prices refresh every 30 seconds via Kite API. Slightly delayed.</div>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:10px;text-align:center">
+            <div style="font-size:16px;margin-bottom:4px">⚪</div>
+            <div style="font-size:9px;font-weight:700;color:var(--text2)">NSE FALLBACK</div>
+            <div style="font-size:7.5px;color:var(--text2);margin-top:4px;line-height:1.6">Backup only. NSE public data, 3–5 min delay. Not for live trading decisions.</div>
+          </div>
+        </div>
+        <div style="background:rgba(255,200,32,.07);border:1px solid var(--yellow2);border-radius:4px;padding:8px 12px">
+          <div style="font-size:8.5px;color:var(--text2);line-height:1.8">
+            📍 <strong style="color:var(--yellow)">Strike prices shown</strong> (like 22500 CE ₹85) come from the <strong>Option Chain</strong> — pulled live from NSE/Kite. The engine picks the <strong>ATM strike</strong> (the one closest to current Nifty spot price) as the recommended strike. OTM strikes are shown for context in the OI Chain panel below.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 3: How signals work -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;overflow:hidden">
+      <div style="background:rgba(160,80,255,.08);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px">
+        <div style="width:26px;height:26px;background:var(--purple);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;flex-shrink:0">3</div>
+        <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;color:var(--purple);letter-spacing:2px">HOW THE SIGNAL ENGINE WORKS</div>
+      </div>
+      <div style="padding:14px">
+        <div style="font-size:8.5px;color:var(--text2);line-height:1.8;margin-bottom:10px">
+          QUANTRA BEAST runs <strong style="color:var(--cyan)">8 independent analysis engines</strong> simultaneously. Each engine looks at a different aspect of the market. They vote, and the composite score decides the signal.
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:12px">
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--cyan)">📈 TREND</div>
+            <div style="font-size:7.5px;color:var(--text3);margin-top:4px;line-height:1.6">Checks EMA 9/21/50. Is price above or below its moving averages? Short-term vs long-term direction.</div>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--yellow)">⚡ VOLATILITY</div>
+            <div style="font-size:7.5px;color:var(--text3);margin-top:4px;line-height:1.6">Reads India VIX. High VIX = fear/big moves expected. Low VIX = calm market, options are cheap.</div>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--green)">📊 OPTIONS</div>
+            <div style="font-size:7.5px;color:var(--text3);margin-top:4px;line-height:1.6">Reads PCR (Put-Call Ratio) and Open Interest. Where are the big players placing bets?</div>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--red)">🎯 GAMMA</div>
+            <div style="font-size:7.5px;color:var(--text3);margin-top:4px;line-height:1.6">Gamma exposure near ATM. High gamma = market makers force big moves. Amplifies signals.</div>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--purple)">🔄 REGIME</div>
+            <div style="font-size:7.5px;color:var(--text3);margin-top:4px;line-height:1.6">Is the market trending or ranging? RSI, Bollinger Bands, ATR. Is momentum building or fading?</div>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--kite)">💰 FLOW</div>
+            <div style="font-size:7.5px;color:var(--text3);margin-top:4px;line-height:1.6">FII/DII activity. Are foreign investors buying or selling? Smart money flow direction.</div>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--cyan)">🧠 SENTIMENT</div>
+            <div style="font-size:7.5px;color:var(--text3);margin-top:4px;line-height:1.6">Max Pain, support/resistance from OI buildup. Where will market gravitate by expiry?</div>
+          </div>
+          <div style="background:var(--bg3);border:1px solid var(--border);border-radius:4px;padding:8px">
+            <div style="font-size:10px;font-weight:700;color:var(--green)">📰 NEWS</div>
+            <div style="font-size:7.5px;color:var(--text3);margin-top:4px;line-height:1.6">Live market news scored for impact. RBI announcements, FII data, global cues — auto-analyzed.</div>
+          </div>
+        </div>
+        <div style="background:rgba(0,240,124,.06);border:1px solid var(--green2);border-radius:4px;padding:8px 12px">
+          <div style="font-size:8.5px;color:var(--text2);line-height:1.8">
+            ✅ <strong style="color:var(--green)">Does it analyse charts?</strong> Yes — TREND and REGIME engines analyse price action using EMA crossovers, RSI momentum, MACD, and Bollinger Band breakouts. It's the equivalent of reading 3 timeframe charts simultaneously. The <strong>Entry Timing Score</strong> specifically waits for all chart conditions to align before recommending entry.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 4: Reading the signal -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;overflow:hidden">
+      <div style="background:rgba(255,58,92,.08);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px">
+        <div style="width:26px;height:26px;background:var(--red);color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;flex-shrink:0">4</div>
+        <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;color:var(--red);letter-spacing:2px">READING THE SIGNAL — WHAT DO NUMBERS MEAN?</div>
+      </div>
+      <div style="padding:14px;display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <div style="font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:1px;margin-bottom:8px">SIGNAL CARD</div>
+          <div style="font-size:8.5px;color:var(--text2);line-height:2.1">
+            <span style="color:var(--green);font-weight:700">BUY CE (CALL)</span> = Market going UP → Buy a Call option<br>
+            <span style="color:var(--red);font-weight:700">BUY PE (PUT)</span> = Market going DOWN → Buy a Put option<br>
+            <span style="color:var(--yellow);font-weight:700">WAIT / HOLD</span> = Mixed signals → See Straddle recommendation<br>
+            <span style="color:var(--cyan);font-weight:700">Confidence %</span> = How strongly the engines agree (60%+ = trade)<br>
+            <span style="color:var(--cyan);font-weight:700">Composite score</span> = Sum of all engine votes (-100 to +100)
+          </div>
+        </div>
+        <div>
+          <div style="font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:1px;margin-bottom:8px">ENTRY TIMING SCORE (most important!)</div>
+          <div style="background:var(--bg3);border-radius:4px;padding:8px">
+            <div style="font-size:8px;color:var(--text2);line-height:2">
+              <span style="color:var(--red)">0–39:</span> Do NOT enter. Wait.<br>
+              <span style="color:var(--yellow)">40–59:</span> Getting ready. Watch closely.<br>
+              <span style="color:var(--green)">60–79:</span> ✅ Good entry. Place trade now.<br>
+              <span style="color:var(--cyan)">80–100:</span> 🚀 Strong setup. High confidence.
+            </div>
+            <div style="font-size:7.5px;color:var(--text3);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">The score <strong>combines chart momentum + options flow + timing</strong>. Never enter below 60.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 5: Mixed signal / Straddle -->
+    <div style="background:var(--panel);border:2px solid var(--yellow2);border-radius:6px;margin-bottom:12px;overflow:hidden">
+      <div style="background:rgba(255,200,32,.1);border-bottom:1px solid var(--yellow2);padding:10px 14px;display:flex;align-items:center;gap:10px">
+        <div style="width:26px;height:26px;background:var(--yellow);color:#000;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;flex-shrink:0">5</div>
+        <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;color:var(--yellow);letter-spacing:2px">MIXED SIGNAL → STRADDLE / STRANGLE STRATEGY</div>
+      </div>
+      <div style="padding:14px">
+        <div style="font-size:8.5px;color:var(--text2);line-height:1.8;margin-bottom:10px">
+          When engines are split (e.g. 4 bull + 4 bear), the dashboard shows a <strong style="color:var(--yellow)">⚖️ LONG STRADDLE</strong> or <strong style="color:var(--yellow)">🦅 LONG STRANGLE</strong> recommendation instead of WAIT. This means: <em>the market is coiled and will make a big move — we just don't know which direction yet.</em>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+          <div style="background:rgba(255,200,32,.06);border:1px solid var(--yellow2);border-radius:4px;padding:10px">
+            <div style="font-size:10px;font-weight:700;color:var(--yellow);margin-bottom:6px">⚖️ LONG STRADDLE</div>
+            <div style="font-size:8px;color:var(--text2);line-height:1.8">Buy <strong>ATM CE + ATM PE</strong> at the same strike. Best when VIX is low (cheap premiums). Profits from any big move — up or down.<br><br><strong style="color:var(--yellow)">Example:</strong> Nifty at 22500 → Buy 22500 CE + Buy 22500 PE</div>
+          </div>
+          <div style="background:rgba(255,200,32,.06);border:1px solid var(--yellow2);border-radius:4px;padding:10px">
+            <div style="font-size:10px;font-weight:700;color:var(--yellow);margin-bottom:6px">🦅 LONG STRANGLE</div>
+            <div style="font-size:8px;color:var(--text2);line-height:1.8">Buy <strong>OTM CE + OTM PE</strong> at different strikes. Cheaper cost but needs bigger move to profit. Shown when engine picks slightly different strikes.<br><br><strong style="color:var(--yellow)">Example:</strong> Nifty at 22500 → Buy 22600 CE + Buy 22400 PE</div>
+          </div>
+        </div>
+        <div style="background:var(--bg3);border-radius:4px;padding:10px;border-left:3px solid var(--yellow)">
+          <div style="font-size:9px;font-weight:700;color:var(--yellow);margin-bottom:6px">HOW TO MANAGE A STRADDLE TRADE</div>
+          <div style="font-size:8.5px;color:var(--text2);line-height:2">
+            1. Buy both legs simultaneously (CE + PE) when market opens<br>
+            2. Watch which side starts moving — that leg gains value quickly<br>
+            3. <strong style="color:var(--green)">Book the winning leg</strong> when it gains 80–100% profit<br>
+            4. <strong style="color:var(--red)">Exit the losing leg</strong> at 30–40% loss (it won't recover)<br>
+            5. Net result: winning leg profits &gt; losing leg loss = overall profit<br>
+            6. <strong style="color:var(--cyan)">Avoid holding past 3:00 PM</strong> — theta decay (time decay) eats value fast
+          </div>
+        </div>
+        <div style="background:rgba(255,58,92,.06);border:1px solid var(--red2);border-radius:4px;padding:8px 10px;margin-top:8px">
+          <div style="font-size:8px;color:var(--text2);line-height:1.7">⚠️ <strong style="color:var(--red)">When to AVOID straddle:</strong> If VIX is above 20 (premiums too expensive), if expiry is same day (theta kills you), or if there's no expected event/move. The dashboard will show <strong style="color:var(--red)">AVOID</strong> automatically when these conditions are met.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 6: Trade execution flow -->
+    <div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;margin-bottom:12px;overflow:hidden">
+      <div style="background:rgba(0,240,124,.08);border-bottom:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px">
+        <div style="width:26px;height:26px;background:var(--green);color:#000;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:12px;flex-shrink:0">6</div>
+        <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;color:var(--green);letter-spacing:2px">EXECUTING A TRADE — STEP BY STEP</div>
+      </div>
+      <div style="padding:14px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div>
+            <div style="font-size:9px;color:var(--green);font-weight:700;letter-spacing:1px;margin-bottom:8px">DIRECTIONAL TRADE (BUY CE or PE)</div>
+            <div style="font-size:8.5px;color:var(--text2);line-height:2.1">
+              ① Wait for <strong style="color:var(--green)">Entry Timing ≥ 60</strong><br>
+              ② Note the <strong style="color:var(--cyan)">strike price</strong> shown (e.g. 22500 CE)<br>
+              ③ Check the <strong style="color:var(--cyan)">Zerodha symbol</strong> shown (copy it exactly)<br>
+              ④ Go to Kite → Search that symbol → Buy<br>
+              ⑤ Come back → click <strong style="color:var(--green)">CONFIRM ENTRY</strong><br>
+              ⑥ Dashboard starts live monitoring your P&L<br>
+              ⑦ Exit when target hit OR stop loss breached
+            </div>
+          </div>
+          <div>
+            <div style="font-size:9px;color:var(--yellow);font-weight:700;letter-spacing:1px;margin-bottom:8px">WHERE TO FIND OPTION PRICES IN KITE</div>
+            <div style="background:var(--bg3);border-radius:4px;padding:10px;font-size:8px;color:var(--text2);line-height:2">
+              1. Open <strong style="color:var(--kite)">kite.zerodha.com</strong><br>
+              2. Search the Zerodha symbol shown here<br>
+              &nbsp;&nbsp;&nbsp;(e.g. NIFTY26MAR1722500CE)<br>
+              3. The market price = option premium (₹)<br>
+              4. This ₹ price is what the dashboard calls "Entry"<br>
+              5. For real-time prices also check <strong>NSE Options Chain</strong><br>
+              &nbsp;&nbsp;&nbsp;at nseindia.com → Market Data → Options Chain
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Golden rules -->
+    <div style="background:rgba(255,200,32,.06);border:1px solid var(--yellow2);border-radius:6px;padding:14px;margin-bottom:16px">
+      <div style="font-family:'Orbitron',monospace;font-size:11px;font-weight:700;color:var(--yellow);letter-spacing:2px;margin-bottom:10px">⭐ GOLDEN RULES — NEVER BREAK THESE</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div style="font-size:8.5px;color:var(--text2);line-height:2.1">
+          ❌ <strong>Never trade</strong> against both PCR + VIX combo signals<br>
+          ❌ <strong>Never enter</strong> if Entry Timing Score is below 60<br>
+          ❌ <strong>Never risk</strong> more than 2% of capital per trade<br>
+          ❌ <strong>Stop trading</strong> after 3 losses in a day — review tomorrow
+        </div>
+        <div style="font-size:8.5px;color:var(--text2);line-height:2.1">
+          ✅ <strong>Always set</strong> stop loss before entering<br>
+          ✅ <strong>Scale out</strong> 50% of position at 1R (1× risk earned)<br>
+          ✅ <strong>Let the system run</strong> — don't override signals emotionally<br>
+          ✅ <strong>Market open 9:20–10:00 AM</strong> = best entry window
+        </div>
+      </div>
+    </div>
+
+    <div style="text-align:center;padding-bottom:10px">
+      <button onclick="closeGuide()" style="background:var(--cyan);color:#000;border:none;padding:10px 30px;border-radius:4px;font-family:'Orbitron',monospace;font-weight:700;font-size:10px;letter-spacing:2px;cursor:pointer">GOT IT — START TRADING</button>
+    </div>
+
+  </div>
+</div>
+<!-- ════ END GUIDE MODAL ════ -->
 <div class="pane lp">
 
   <!-- BACKEND -->
@@ -2373,7 +2632,7 @@ window.addEventListener('load',()=>{
   setTimeout(()=>{overlay.classList.add('fade');setTimeout(()=>overlay.style.display='none',500);},3000);
   setTimeout(connect,400);
   updateNotifBtn();startClock();
-  // ── Pre-populate expiries immediately on load (don't wait for signal) ──
+  // ── Pre-populate expiries first (300ms), then selectSegment syncs UI (600ms) ──
   setTimeout(() => {
     Object.keys(SEGMENT_CONFIG).forEach(seg => {
       if (!_allExpiries[seg] || !_allExpiries[seg].length) {
@@ -2381,10 +2640,25 @@ window.addEventListener('load',()=>{
       }
     });
     buildExpiryDropdown(_selectedSegment);
-  }, 500);
+  }, 300); // run BEFORE selectSegment (which fires at 500ms)
 });
 
 // CLOCK
+// ── HOW TO USE GUIDE ──────────────────────────────────────────────────────
+function showGuide() {
+  const m = document.getElementById('guideModal');
+  if(m) { m.style.display = 'block'; m.scrollTop = 0; }
+}
+function closeGuide() {
+  const m = document.getElementById('guideModal');
+  if(m) m.style.display = 'none';
+}
+// Close on backdrop click
+document.addEventListener('click', e => {
+  const m = document.getElementById('guideModal');
+  if(m && e.target === m) m.style.display = 'none';
+});
+
 function startClock(){
   setInterval(()=>{
     const now=new Date();
@@ -2560,7 +2834,12 @@ async function fetchAndRenderCap(){
 // ─────────────────────────────────────────────────────────────────────────────
 
 // CONNECT BACKEND
+let _isConnecting = false; // guard — prevent double-connect
+
 async function connect(){
+  if(_isConnecting){ toast('Already connecting...','yellow'); return; }
+  _isConnecting = true;
+
   backend=document.getElementById('backendUrl').value.trim().replace(/\/$/,'');
   const btn=document.getElementById('connectBtn');
   btn.innerHTML='<span class="spin">⟳</span>';btn.disabled=true;
@@ -2582,6 +2861,7 @@ async function connect(){
 
       if(d.status==='alive'||d.status==='ok'){
         connected=true;
+        _isConnecting=false;
         setSt('ok',`CONNECTED — v${d.version||'4.0'} · Railway`);
         document.getElementById('connDot').className='cdot2 on';
         btn.innerHTML='✓ LIVE';btn.disabled=false;
@@ -2605,7 +2885,9 @@ async function connect(){
   }
 
   // All retries failed
-  setSt('err','Failed — Railway server may be down. Check Railway dashboard.');
+  connected=false;
+  _isConnecting=false;
+  setSt('err','Failed — check Railway dashboard or backend URL');
   btn.innerHTML='RETRY';btn.disabled=false;
   btn.onclick=connect;
   toast('Connection failed — check Railway dashboard','red');
@@ -3281,8 +3563,14 @@ function renderSignal(data){
   }
   
   const ct = data.can_trade||{};
-  if(p && s.action!=='WAIT' && !inTrade) renderTrade(s,p);
-  else document.getElementById('tradeSec').classList.add('hidden');
+  if(p && s.action!=='WAIT' && !inTrade) {
+    renderTrade(s, p);
+  } else if(p && s.signal_cls === 'wait' && !inTrade) {
+    // WAIT: show straddle/strangle trade card
+    renderStraddleTrade(s, p, data.option_meta||{});
+  } else {
+    document.getElementById('tradeSec').classList.add('hidden');
+  }
   
   const _ometa = data.option_meta||{};
   if(!_ometa.symbol && data.signal) _ometa.symbol = data.signal.symbol||'NIFTY';
@@ -3452,11 +3740,7 @@ function renderMarketIntelligence(s, p, meta, chain) {
         </div>
       </div>` : ''}
     </div>` : `
-    <div style="padding:12px;text-align:center;border-bottom:1px solid var(--border)">
-      <div style="font-size:20px;margin-bottom:5px">⏸</div>
-      <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:700;color:var(--yellow);letter-spacing:3px">WAIT — NO TRADE</div>
-      <div style="font-size:8px;color:var(--text2);margin-top:5px">Market signals are conflicting. Wait for clearer direction.</div>
-    </div>`}
+    ${_buildStraddleRecommendation(s, p, meta, vix, pcr, absComp)}`}
 
     <!-- PCR + VIX analysis -->
     <div style="padding:8px 10px;border-bottom:1px solid var(--border);">
@@ -3488,6 +3772,168 @@ function renderMarketIntelligence(s, p, meta, chain) {
 
 
 
+// ══ STRADDLE / STRANGLE RECOMMENDATION ENGINE — v22 ══════════════════════
+// Called when signal is WAIT (mixed/sideways). Recommends the best neutral
+// options strategy based on VIX, PCR, composite strength, and market state.
+function _buildStraddleRecommendation(s, p, meta, vix, pcr, absComp) {
+  const spot      = meta?.spot || p?.spot || 0;
+  const atm       = meta?.atm_strike || (spot ? Math.round(spot/50)*50 : 0);
+  const ceStrike  = p?.ce_strike || atm;
+  const peStrike  = p?.pe_strike || atm;
+  const cePrice   = p?.ce_price  || 0;
+  const pePrice   = p?.pe_price  || 0;
+  const expiry    = p?.expiry || meta?.expiry || '—';
+  const bullCount = s.bull_count || 0;
+  const bearCount = s.bear_count || 0;
+  const totalEng  = bullCount + bearCount + (s.neutral_count || 0) || 8;
+
+  // ── Classify the mixed state ──────────────────────────────────────────
+  // Slight bull lean: more engines bull but not strong enough for directional
+  const leanBull = bullCount > bearCount;
+  const leanBear = bearCount > bullCount;
+  const perfectMix = bullCount === bearCount;
+
+  // ── Which strategy? ───────────────────────────────────────────────────
+  // STRADDLE: buy ATM CE + ATM PE (same strike) — for high vol expected
+  // STRANGLE: buy OTM CE + OTM PE (diff strikes) — cheaper, needs bigger move
+  // LONG STRADDLE best when: VIX low (cheap premiums), big event expected
+  // STRANGLE better when: VIX moderate, want lower cost
+  const isLowVix    = vix > 0 && vix < 14;
+  const isHighVix   = vix > 20;
+  const isSameATM   = ceStrike === peStrike;
+  const strategyType = isHighVix ? 'AVOID' : isSameATM ? 'STRADDLE' : 'STRANGLE';
+
+  // ── Cost & breakeven ─────────────────────────────────────────────────
+  const totalCost    = cePrice + pePrice;
+  const upBreakeven  = ceStrike + totalCost;
+  const downBreakeven= peStrike - totalCost;
+  const bePct        = spot > 0 ? ((totalCost / spot) * 100).toFixed(1) : 0;
+
+  // ── Profit scenario ──────────────────────────────────────────────────
+  const upMove    = spot > 0 ? ((upBreakeven  - spot) / spot * 100).toFixed(1) : 0;
+  const downMove  = spot > 0 ? ((spot - downBreakeven) / spot * 100).toFixed(1) : 0;
+  const profitAt1pct = spot > 0 ? Math.round(spot * 0.01 - totalCost) : 0;
+
+  // ── Event context for why sideways ───────────────────────────────────
+  const eventHint = vix > 16
+    ? '⚡ VIX elevated — event risk is high. Straddle benefits from big moves.'
+    : pcr > 1.3
+    ? '📊 High put writing — big players hedging. Market coiled, big move possible.'
+    : pcr < 0.8
+    ? '📊 High call writing — heavy resistance above. Range-bound for now.'
+    : '↔ No clear catalyst — market consolidating within a range.';
+
+  // ── Strategy color ────────────────────────────────────────────────────
+  const stratColor   = strategyType === 'AVOID' ? 'var(--red)' : 'var(--yellow)';
+  const stratBg      = strategyType === 'AVOID' ? 'rgba(255,58,92,.06)' : 'rgba(255,200,32,.06)';
+  const stratBorder  = strategyType === 'AVOID' ? 'var(--red2)' : 'var(--yellow2)';
+
+  // ── Lean indicator ────────────────────────────────────────────────────
+  const leanBadge = leanBull
+    ? `<span style="font-size:7px;color:var(--green);background:var(--green3);border:1px solid var(--green2);padding:1px 6px;border-radius:2px;margin-left:6px">▲ SLIGHT BULL LEAN</span>`
+    : leanBear
+    ? `<span style="font-size:7px;color:var(--red);background:var(--red3);border:1px solid var(--red2);padding:1px 6px;border-radius:2px;margin-left:6px">▼ SLIGHT BEAR LEAN</span>`
+    : `<span style="font-size:7px;color:var(--yellow);background:var(--yellow3);border:1px solid var(--yellow2);padding:1px 6px;border-radius:2px;margin-left:6px">↔ PERFECTLY MIXED</span>`;
+
+  if(strategyType === 'AVOID') {
+    return `<div style="padding:12px 10px;border-bottom:1px solid var(--border);background:rgba(255,58,92,.05)">
+      <div style="display:flex;align-items:center;margin-bottom:8px">
+        <span style="font-size:16px">⛔</span>
+        <div style="margin-left:8px">
+          <div style="font-family:'Orbitron',monospace;font-size:11px;font-weight:900;color:var(--red);letter-spacing:2px">AVOID ALL POSITIONS</div>
+          <div style="font-size:7px;color:var(--text3);margin-top:1px">VIX ${vix.toFixed(1)} — premiums too expensive for straddle/strangle</div>
+        </div>
+      </div>
+      <div style="font-size:8px;color:var(--text2);line-height:1.8;padding:6px 8px;background:var(--bg3);border-radius:3px;border-left:2px solid var(--red2)">
+        When VIX is above 20, options premiums are very expensive. Buying a straddle or strangle here means you need a massive move just to break even. <strong style="color:var(--yellow)">Wait for VIX to drop below 16</strong> before entering any neutral strategy. Patience is your edge.
+      </div>
+    </div>`;
+  }
+
+  return `<div style="padding:10px;border-bottom:1px solid var(--border);background:${stratBg}">
+
+    <!-- Header -->
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="display:flex;align-items:center">
+        <span style="font-size:16px">${strategyType==='STRADDLE'?'⚖️':'🦅'}</span>
+        <div style="margin-left:7px">
+          <div style="font-family:'Orbitron',monospace;font-size:11px;font-weight:900;color:${stratColor};letter-spacing:2px">LONG ${strategyType}</div>
+          <div style="font-size:7px;color:var(--text3);margin-top:1px">BUY BOTH SIDES — profit from big move either way</div>
+        </div>
+      </div>
+      ${leanBadge}
+    </div>
+
+    <!-- Why sideways box -->
+    <div style="font-size:8px;color:var(--text2);padding:5px 8px;background:var(--bg3);border-radius:3px;border-left:2px solid ${stratBorder};margin-bottom:8px;line-height:1.6">${eventHint}</div>
+
+    <!-- Two legs -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+
+      <!-- CE leg -->
+      <div style="background:rgba(0,240,124,.07);border:1px solid var(--green2);border-radius:4px;padding:9px">
+        <div style="font-size:6px;color:var(--green2);letter-spacing:1.5px;margin-bottom:4px">📈 LEG 1 — CALL OPTION</div>
+        <div style="font-family:'Orbitron',monospace;font-size:18px;font-weight:900;color:var(--green);line-height:1">${ceStrike} <span style="font-size:10px">CE</span></div>
+        <div style="font-size:8px;color:var(--text2);margin-top:5px">
+          ${cePrice ? `<div>Entry: <strong style="color:var(--green)">₹${cePrice}</strong></div>` : '<div style="color:var(--text3)">Price: fetch from Kite</div>'}
+          ${p?.ce_sl ? `<div style="color:var(--red)">SL if < ₹${p.ce_sl}</div>` : ''}
+        </div>
+        <div style="font-size:7px;color:var(--green2);margin-top:4px">Profits if market goes UP</div>
+      </div>
+
+      <!-- PE leg -->
+      <div style="background:rgba(255,58,92,.07);border:1px solid var(--red2);border-radius:4px;padding:9px">
+        <div style="font-size:6px;color:var(--red2);letter-spacing:1.5px;margin-bottom:4px">📉 LEG 2 — PUT OPTION</div>
+        <div style="font-family:'Orbitron',monospace;font-size:18px;font-weight:900;color:var(--red);line-height:1">${peStrike} <span style="font-size:10px">PE</span></div>
+        <div style="font-size:8px;color:var(--text2);margin-top:5px">
+          ${pePrice ? `<div>Entry: <strong style="color:var(--red)">₹${pePrice}</strong></div>` : '<div style="color:var(--text3)">Price: fetch from Kite</div>'}
+          ${p?.pe_sl ? `<div style="color:var(--red)">SL if < ₹${p.pe_sl}</div>` : ''}
+        </div>
+        <div style="font-size:7px;color:var(--red2);margin-top:4px">Profits if market goes DOWN</div>
+      </div>
+    </div>
+
+    <!-- Cost & Breakeven -->
+    ${totalCost > 0 ? `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:8px 10px;margin-bottom:8px">
+      <div style="font-size:6px;color:var(--text3);letter-spacing:2px;margin-bottom:6px">BREAKEVEN ANALYSIS</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;text-align:center">
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--yellow)">₹${totalCost.toFixed(1)}</div>
+          <div style="font-size:6px;color:var(--text3);margin-top:1px">TOTAL COST</div>
+        </div>
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--green)">${upBreakeven.toFixed(0)}</div>
+          <div style="font-size:6px;color:var(--text3);margin-top:1px">UP BREAKEVEN</div>
+        </div>
+        <div>
+          <div style="font-size:10px;font-weight:700;color:var(--red)">${downBreakeven.toFixed(0)}</div>
+          <div style="font-size:6px;color:var(--text3);margin-top:1px">DOWN BREAKEVEN</div>
+        </div>
+      </div>
+      <div style="font-size:7px;color:var(--text2);margin-top:5px;padding-top:5px;border-top:1px solid var(--border);text-align:center">
+        Market needs to move <strong style="color:var(--yellow)">${bePct}%</strong> in either direction to break even
+        ${parseFloat(upMove) > 0 ? ` · Up ${upMove}% or Down ${downMove}%` : ''}
+      </div>
+    </div>` : ''}
+
+    <!-- Plain English instruction -->
+    <div style="font-size:8px;color:var(--text2);line-height:1.9;padding:6px 8px;background:rgba(255,255,255,.02);border-radius:3px;border-left:2px solid ${stratColor}">
+      <strong style="color:var(--text)">How to trade this:</strong><br>
+      1. Buy <strong style="color:var(--green)">${ceStrike} CE</strong>${cePrice?` at approx ₹${cePrice}`:''} + Buy <strong style="color:var(--red)">${peStrike} PE</strong>${pePrice?` at approx ₹${pePrice}`:''}<br>
+      2. Both expire: <strong style="color:var(--yellow)">${expiry}</strong><br>
+      3. Set SL: exit whichever leg drops 30–40% in value<br>
+      4. Take profit: when one leg doubles, exit that leg and hold the other<br>
+      5. ${leanBull ? `If market breaks up — CE profits fast, book CE. Hold PE as hedge.` : leanBear ? `If market breaks down — PE profits fast, book PE. Hold CE as hedge.` : `No directional bias — let the move dictate which leg to book first.`}
+    </div>
+
+    <div style="font-size:7px;color:var(--text3);text-align:center;margin-top:6px">
+      ${bullCount}/${totalEng} bull · ${bearCount}/${totalEng} bear — insufficient conviction for directional trade
+    </div>
+
+  </div>`;
+}
+
 // Build correct Zerodha symbol: NIFTY25MAR1324500CE
 function buildZerodhaSymbol(symbol, expiry, strike, optType) {
   try {
@@ -3502,6 +3948,102 @@ function buildZerodhaSymbol(symbol, expiry, strike, optType) {
   } catch(e) {
     return `${symbol}${strike}${optType}`;
   }
+}
+
+// ── STRADDLE TRADE CARD — shown in Trade Command Center for WAIT signals ──
+function renderStraddleTrade(s, p, meta) {
+  document.getElementById('tradeSec').classList.remove('hidden');
+
+  const spot      = Math.round(p?.spot || meta?.spot || 0);
+  const atm       = meta?.atm_strike || (spot ? Math.round(spot/50)*50 : 0);
+  const ceStrike  = p?.ce_strike || atm;
+  const peStrike  = p?.pe_strike || atm;
+  const cePrice   = p?.ce_price  || 0;
+  const pePrice   = p?.pe_price  || 0;
+  const expiry    = p?.expiry || meta?.expiry || _selectedExpiry || '—';
+  const vix       = meta?.vix || 0;
+  const stratType = ceStrike === peStrike ? 'STRADDLE' : 'STRANGLE';
+  const totalCost = cePrice + pePrice;
+  const _sym      = p?.symbol || s?.symbol || _selectedSegment || 'NIFTY';
+  const _sc2      = (typeof SEGMENT_CONFIG!=='undefined' && SEGMENT_CONFIG[_sym]) || null;
+  const _ls       = p?.lot_size || (_sc2 ? _sc2.lotSize : 65);
+  const lots      = p?.lots || 1;
+  const capNeeded = totalCost > 0 ? Math.round(totalCost * _ls * lots) : 0;
+  const maxLoss   = capNeeded; // max loss = total premium paid (straddle/strangle buyer)
+
+  const ceSymbol  = buildZerodhaSymbol(_sym, expiry, ceStrike, 'CE');
+  const peSymbol  = buildZerodhaSymbol(_sym, expiry, peStrike, 'PE');
+  const upBE      = ceStrike + totalCost;
+  const downBE    = peStrike - totalCost;
+
+  const bullCount = s?.bull_count || 0;
+  const bearCount = s?.bear_count || 0;
+
+  document.getElementById('compactTradeCard').innerHTML = `
+  <div style="background:rgba(255,200,32,.05);border:2px solid var(--yellow2);border-radius:5px;overflow:hidden">
+    <div style="height:4px;background:linear-gradient(90deg,var(--red2),var(--yellow),var(--green))"></div>
+    <div style="padding:12px 14px">
+
+      <!-- Header -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <div>
+          <div style="font-family:'Orbitron',monospace;font-size:12px;font-weight:900;color:var(--yellow);letter-spacing:2px">⚖️ LONG ${stratType}</div>
+          <div style="font-size:7px;color:var(--text3);margin-top:2px">Buy both sides — profit from any big move · ${bullCount}B/${bearCount}Be mixed signal</div>
+        </div>
+        <div style="font-size:7px;color:var(--yellow);background:var(--yellow3);border:1px solid var(--yellow2);padding:2px 7px;border-radius:2px;font-weight:700">NEUTRAL</div>
+      </div>
+
+      <!-- Two legs side by side -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:8px">
+        <div style="background:rgba(0,240,124,.07);border:1px solid var(--green2);border-radius:4px;padding:10px">
+          <div style="font-size:6px;color:var(--green2);letter-spacing:1px;margin-bottom:3px">LEG 1 · CALL</div>
+          <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:900;color:var(--green);line-height:1">${ceStrike}<span style="font-size:10px"> CE</span></div>
+          <div style="font-size:7px;color:var(--text3);margin-top:3px">${ceSymbol}</div>
+          ${cePrice ? `<div style="font-size:9px;font-weight:700;color:var(--green);margin-top:5px">₹${cePrice} <span style="font-weight:400;font-size:7px;color:var(--text3)">entry</span></div>` : ''}
+          <div style="font-size:7px;color:var(--green2);margin-top:3px">↑ Profits if UP</div>
+        </div>
+        <div style="background:rgba(255,58,92,.07);border:1px solid var(--red2);border-radius:4px;padding:10px">
+          <div style="font-size:6px;color:var(--red2);letter-spacing:1px;margin-bottom:3px">LEG 2 · PUT</div>
+          <div style="font-family:'Orbitron',monospace;font-size:20px;font-weight:900;color:var(--red);line-height:1">${peStrike}<span style="font-size:10px"> PE</span></div>
+          <div style="font-size:7px;color:var(--text3);margin-top:3px">${peSymbol}</div>
+          ${pePrice ? `<div style="font-size:9px;font-weight:700;color:var(--red);margin-top:5px">₹${pePrice} <span style="font-weight:400;font-size:7px;color:var(--text3)">entry</span></div>` : ''}
+          <div style="font-size:7px;color:var(--red2);margin-top:3px">↓ Profits if DOWN</div>
+        </div>
+      </div>
+
+      <!-- Cost / Breakeven row -->
+      ${totalCost > 0 ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin-bottom:8px">
+        <div style="background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:6px;text-align:center">
+          <div style="font-size:10px;font-weight:700;color:var(--yellow)">₹${totalCost.toFixed(1)}</div>
+          <div style="font-size:6px;color:var(--text3);margin-top:1px">TOTAL COST</div>
+        </div>
+        <div style="background:var(--green3);border:1px solid var(--green2);border-radius:3px;padding:6px;text-align:center">
+          <div style="font-size:10px;font-weight:700;color:var(--green)">${upBE.toFixed(0)}</div>
+          <div style="font-size:6px;color:var(--green2);margin-top:1px">UP B/E</div>
+        </div>
+        <div style="background:var(--red3);border:1px solid var(--red2);border-radius:3px;padding:6px;text-align:center">
+          <div style="font-size:10px;font-weight:700;color:var(--red)">${downBE.toFixed(0)}</div>
+          <div style="font-size:6px;color:var(--red2);margin-top:1px">DOWN B/E</div>
+        </div>
+      </div>` : ''}
+
+      <!-- Expiry + exit rule -->
+      <div style="font-size:7px;color:var(--text2);line-height:1.9;padding:6px 8px;background:rgba(255,255,255,.02);border-radius:3px">
+        Expiry: <strong style="color:var(--yellow)">${expiry}</strong> · Spot: <strong>${spot ? spot.toLocaleString('en-IN') : '—'}</strong><br>
+        Exit rule: Book the winning leg when it gains 80%+. Exit the losing leg at 30% loss to cut cost.
+        ${vix > 16 ? `<br><span style="color:var(--red)">⚠ VIX ${vix.toFixed(1)} is elevated — premiums expensive, size down.</span>` : ''}
+      </div>
+
+    </div>
+  </div>`;
+
+  // Update sizing section
+  document.getElementById('aLots').textContent = `${lots} lot(s) × ${_ls} qty (each leg)`;
+  document.getElementById('aCapU').textContent  = capNeeded > 0 ? `₹${capNeeded.toLocaleString('en-IN')}` : '—';
+  document.getElementById('aMaxL').textContent  = maxLoss > 0 ? `₹${maxLoss.toLocaleString('en-IN')} (premium paid)` : '—';
+  document.getElementById('aTgt').textContent   = maxLoss > 0 ? `₹${Math.round(maxLoss * 1.5).toLocaleString('en-IN')} (1.5R)` : '—';
+  document.getElementById('aExp').textContent   = expiry;
 }
 
 function renderTrade(s, p) {
@@ -4754,11 +5296,14 @@ function buildExpiryDropdown(seg) {
   if (!dropdown) return;
 
   const today = new Date(); today.setHours(0,0,0,0);
+  // ── Use STRICTLY FUTURE expiries: d > today means tomorrow onwards ──────
+  // Expiries on today's date are excluded — the day itself is not tradeable
+  // (market already in final settlement phase or closing)
+  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
 
-  // ── Filter out past expiries ALWAYS ────────────────────────────────────
   let allExp = (_allExpiries[seg] || []).filter(exp => {
     const d = parseExpiryDate(exp);
-    return d && d >= today;
+    return d && d >= tomorrow; // strictly future — exclude today's expiry
   });
 
   // If nothing left after filter, regenerate client-side
@@ -4798,9 +5343,12 @@ function buildExpiryDropdown(seg) {
     `<option value="${c.exp}" ${c.exp===_selectedExpiry?'selected':''}>${c.exp} — ${c.label}</option>`
   ).join('');
 
-  // Auto-select nearest future expiry
-  if (!_selectedExpiry || !filtered.find(c => c.exp===_selectedExpiry)) {
+  // Auto-select nearest future expiry — only if no valid selection exists
+  if (!_selectedExpiry || !filtered.find(c => c.exp === _selectedExpiry)) {
     _selectedExpiry = filtered[0]?.exp || '';
+    dropdown.value = _selectedExpiry;
+  } else {
+    // Keep existing selection — just make sure dropdown reflects it
     dropdown.value = _selectedExpiry;
   }
 
@@ -4895,9 +5443,11 @@ function getNextNSEExpiries(seg, count=8) {
   const cfg = SEGMENT_CONFIG[seg] || SEGMENT_CONFIG.NIFTY;
   const expiries = [];
   const today = new Date(); today.setHours(0,0,0,0);
+  // Start from tomorrow — today's expiry (if any) is in final settlement
+  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
 
-  // Find next Tuesday from today
-  let d = new Date(today);
+  // Find next Tuesday from tomorrow onwards
+  let d = new Date(tomorrow);
   // Move to next Tuesday (day=2)
   const dayOfWeek = d.getDay();
   const daysToTue = dayOfWeek <= 2 ? (2 - dayOfWeek) : (9 - dayOfWeek);
@@ -4929,11 +5479,13 @@ function injectExpiriesFromSignal(data) {
   const seg = _selectedSegment;
   let allExp = data.all_expiries || data.option_meta?.all_expiries || [];
 
-  // ── CRITICAL: Filter out past/expired expiries ──────────────────────────
+  // ── CRITICAL: Filter out past AND same-day expiries ────────────────────
+  // On expiry day, the expiry is in final settlement — not for active trading
   const today = new Date(); today.setHours(0,0,0,0);
+  const tomorrow = new Date(today); tomorrow.setDate(today.getDate() + 1);
   allExp = allExp.filter(exp => {
     const d = parseExpiryDate(exp);
-    return d && d >= today;
+    return d && d >= tomorrow; // strictly future — exclude today's expiry
   });
 
   // ── If backend gave no valid future expiries, generate them client-side ─
@@ -4978,7 +5530,8 @@ function renderNewsV7(na) { renderNews(na); }
 
 // ── init segment on load ──
 window.addEventListener('load', () => {
-  setTimeout(() => { selectSegment('NIFTY'); }, 500);
+  // Fire after expiry pre-populate (300ms) — so _allExpiries already has data
+  setTimeout(() => { selectSegment('NIFTY'); }, 700);
 }, true);
 
 // ══════════════════════════════════════════════════════════
@@ -5203,25 +5756,35 @@ function isMarketOpen(){
   return mins >= 555 && mins <= 930; // 9:15 – 15:30 IST
 }
 
-// ── AUTO-RECONNECT: if Railway drops, try every 30s ──────────────────────
+// ── HEALTH MONITOR: silent ping every 45s — reconnect only if truly dead ────
+// Never calls connect() while _isConnecting is true (prevents rapid loop)
 let _reconnectTimer = null;
+let _missedPings = 0;
 setInterval(async () => {
-  if(!connected) return;
+  if(!connected || _isConnecting) return;
   try {
-    const r = await fetch(`${backend}/ping`, {signal: AbortSignal.timeout(5000)});
-    if(!r.ok) throw new Error('not ok');
-    // Reset any stale error state
+    const r = await fetch(`${backend}/ping`, {signal: AbortSignal.timeout(8000)});
+    if(r.ok){ _missedPings = 0; return; } // healthy
+    throw new Error('not ok');
   } catch(e) {
-    // Railway dropped — mark disconnected, attempt reconnect
+    _missedPings++;
+    if(_missedPings < 2) return; // need 2 consecutive fails before acting (avoids flap)
+    // Genuinely dropped
+    _missedPings = 0;
     connected = false;
+    stopRealTimePolling();
     document.getElementById('connDot').className = 'cdot2';
-    setSt('err', 'Railway disconnected — reconnecting...');
-    toast('Railway connection lost — attempting reconnect', 'red');
-    // Auto-reconnect after 10s
+    setSt('err', 'Connection lost — click GO to reconnect');
+    const btn = document.getElementById('connectBtn');
+    if(btn){ btn.innerHTML='RECONNECT'; btn.disabled=false; }
+    toast('Railway connection lost', 'red');
+    // Auto-attempt after 15s — only once, user can retry manually after
     clearTimeout(_reconnectTimer);
-    _reconnectTimer = setTimeout(() => { connect(); }, 10000);
+    _reconnectTimer = setTimeout(() => {
+      if(!connected && !_isConnecting) connect();
+    }, 15000);
   }
-}, 30000);
+}, 45000); // every 45s — not aggressive
 
 // ── ENTRY TIMING ALERT: notify when score crosses 60 (ENTER zone) ────────
 let _lastEntryScore = 0;
@@ -5258,23 +5821,20 @@ if(_v18_origGenSignal) {
   };
 }
 
-// ── BACKEND URL: update header badge on connect ───────────────────────────
-const _v18_origConnect = typeof connect === 'function' ? connect : null;
-// Show Railway badge in header when connected
+// ── BACKEND URL: show Railway badge in header when connected ─────────────
 const _origSetSt = setSt;
 setSt = function(cls, txt) {
   _origSetSt(cls, txt);
-  const badge = document.getElementById('kiteBadgeHdr');
-  if(badge && cls === 'ok') {
-    // Add Railway indicator next to KITE badge
-    const railBadge = document.getElementById('railwayBadge') || (() => {
+  if(cls === 'ok') {
+    const badge = document.getElementById('kiteBadgeHdr');
+    if(!badge) return;
+    if(!document.getElementById('railwayBadge')) {
       const b = document.createElement('div');
       b.id = 'railwayBadge';
       b.style.cssText = 'font-size:7px;color:#a0ff70;background:rgba(160,255,112,.1);border:1px solid rgba(160,255,112,.3);padding:2px 7px;border-radius:2px;letter-spacing:1px;flex-shrink:0;';
       b.textContent = '🚂 RAILWAY';
-      badge.parentNode.insertBefore(b, badge.nextSibling);
-      return b;
-    })();
+      try { badge.parentNode.insertBefore(b, badge.nextSibling); } catch(e){}
+    }
   }
 };
 
