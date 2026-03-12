@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>QUANTRA BEAST v22 — NSE/Kite | Trader-First Design | Greeks | Entry Timing | OI Heatmap</title>
+<title>QUANTRA BEAST v24 — NSE/Kite | Trader-First Design | Greeks | Entry Timing | OI Heatmap</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <style>
@@ -288,36 +288,125 @@ header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;ba
   padding:5px 0;font-size:7px;font-weight:700;letter-spacing:1.5px;
   border-bottom:1px solid var(--border);
 }
-.oit th.ce-grp{color:var(--red);background:rgba(255,58,92,.06);text-align:center;border-right:1px solid var(--border);}
-.oit th.str-grp{color:var(--cyan);background:rgba(0,212,255,.04);text-align:center;}
-.oit th.pe-grp{color:var(--green);background:rgba(0,240,124,.06);text-align:center;border-left:1px solid var(--border);}
-/* col sub-headers */
-.oit thead tr:last-child th{
-  padding:4px 8px;font-size:6px;font-weight:500;letter-spacing:.8px;
-  color:var(--text3);border-bottom:2px solid var(--border2);
-}
-.oit th.ce-col{text-align:right;background:rgba(255,58,92,.03);}
-.oit th.str-col{text-align:center;background:rgba(0,212,255,.03);}
-.oit th.pe-col{text-align:left;background:rgba(0,240,124,.03);}
+/* ═══════════════════════════════════════════
+   NSE-STYLE OPTION CHAIN TABLE — v24
+═══════════════════════════════════════════ */
+.oit{width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed;}
 
-/* body */
-.oit td{padding:6px 8px;border-bottom:1px solid #040f18;}
-.oit td.ce-col{text-align:right;background:rgba(255,58,92,.015);}
-.oit td.str-col{
-  text-align:center;background:#020d14;
-  font-size:11px;font-weight:700;color:var(--text);
+/* Group headers — CALLS / STRIKE / PUTS */
+.oit th.ce-grp{
+  color:#e05555;background:rgba(255,80,80,.08);text-align:center;
+  border-bottom:2px solid rgba(255,80,80,.3);padding:7px 4px;
+  font-size:9px;font-weight:700;letter-spacing:2px;
+}
+.oit th.str-grp{
+  color:#888;background:rgba(255,255,255,.03);text-align:center;
+  border-bottom:2px solid var(--border);padding:7px 4px;
+  font-size:9px;letter-spacing:1px;
+}
+.oit th.pe-grp{
+  color:#3dbd72;background:rgba(40,180,80,.08);text-align:center;
+  border-bottom:2px solid rgba(40,180,80,.3);padding:7px 4px;
+  font-size:9px;font-weight:700;letter-spacing:2px;
+}
+
+/* Sub-column headers */
+.oit thead tr.subhdr th{
+  padding:4px 6px;font-size:7px;font-weight:500;letter-spacing:.5px;
+  color:var(--text3);border-bottom:1px solid var(--border);
+  white-space:nowrap;overflow:hidden;
+}
+.oit th.ce-col{text-align:right;background:rgba(255,58,92,.025);}
+.oit th.str-col{
+  text-align:center;background:rgba(255,255,255,.02);
   border-left:1px solid var(--border);border-right:1px solid var(--border);
-  padding:6px 12px;white-space:nowrap;
 }
-.oit td.pe-col{text-align:left;background:rgba(0,240,124,.015);}
+.oit th.pe-col{text-align:left;background:rgba(0,200,80,.025);}
 
-/* row types */
-.oit tr.atm td{background:rgba(0,212,255,.07)!important;}
-.oit tr.atm td.str-col{background:rgba(0,212,255,.15)!important;color:var(--cyan);}
-.oit tr.atm:hover td{background:rgba(0,212,255,.1)!important;}
-.oit tr.itm-ce td.ce-col{background:rgba(255,58,92,.05)!important;}
-.oit tr.itm-pe td.pe-col{background:rgba(0,240,124,.05)!important;}
-.oit tr:hover td{filter:brightness(1.4);}
+/* Body rows */
+.oit td{padding:5px 6px;border-bottom:1px solid #080e14;white-space:nowrap;overflow:hidden;}
+.oit td.ce-col{text-align:right;background:rgba(255,30,60,.02);}
+.oit td.str-col{
+  text-align:center;background:#040c14;
+  font-size:12px;font-weight:700;color:var(--text);
+  border-left:1px solid var(--border);border-right:1px solid var(--border);
+  padding:5px 8px;
+}
+.oit td.pe-col{text-align:left;background:rgba(0,180,60,.02);}
+
+/* ATM row — highlighted like NSE */
+.oit tr.atm td{background:rgba(30,120,200,.07)!important;}
+.oit tr.atm td.str-col{
+  background:rgba(30,120,200,.18)!important;
+  color:#60c8ff!important;font-size:13px;
+}
+.oit tr.atm:hover td{background:rgba(30,120,200,.12)!important;}
+
+/* ITM shading */
+.oit tr.itm-ce td.ce-col{background:rgba(255,58,92,.055)!important;}
+.oit tr.itm-pe td.pe-col{background:rgba(0,200,80,.055)!important;}
+.oit tr:hover td{filter:brightness(1.5);cursor:default;}
+
+/* OI % change column — green positive like NSE */
+.oichg{font-size:9px;font-weight:600;min-width:34px;}
+.oichg.pos{color:#3dbd72;}
+.oichg.neg{color:#e05555;}
+.oichg.neu{color:var(--text3);}
+
+/* OI lakh value */
+.oilk{font-size:10px;font-weight:600;color:var(--text2);min-width:30px;}
+.oilk.ce{text-align:right;}.oilk.pe{text-align:left;}
+
+/* OI fill bar — key visual like NSE */
+.oibar-wrap{display:flex;align-items:center;gap:4px;}
+.oibar-wrap.r{justify-content:flex-end;}
+.oibar-wrap.l{justify-content:flex-start;}
+.nse-bar{height:9px;border-radius:2px;transition:width .5s ease;min-width:2px;}
+.nse-bar.ce{background:rgba(220,60,60,.75);}
+.nse-bar.pe{background:rgba(50,185,90,.75);}
+.nse-bar-bg{width:64px;background:rgba(255,255,255,.04);border-radius:2px;overflow:hidden;flex-shrink:0;}
+.nse-bar-bg.ce .nse-bar{float:right;}
+
+/* LTP cell */
+.nse-ltp{font-size:12px;font-weight:700;color:var(--text);}
+.nse-ltp.atm{color:#60c8ff!important;}
+.nse-ltp.rec{color:var(--yellow)!important;}
+
+/* IV cell */
+.nse-iv{font-size:9px;color:var(--text3);}
+
+/* Strike cell */
+.nse-strike{font-size:12px;font-weight:700;}
+.nse-atm-badge{
+  display:inline-block;font-size:6px;font-weight:700;
+  background:#2060a0;color:#aaddff;padding:1px 4px;border-radius:2px;
+  margin-left:4px;vertical-align:middle;letter-spacing:1px;
+}
+.nse-rec-badge{
+  display:inline-block;font-size:6px;font-weight:700;
+  padding:1px 4px;border-radius:2px;margin-left:3px;vertical-align:middle;
+}
+.nse-rec-badge.ce{background:rgba(255,58,92,.25);color:var(--red);}
+.nse-rec-badge.pe{background:rgba(0,200,80,.2);color:#3dbd72;}
+
+/* Top bar: spot + expiry info like NSE */
+.nse-chain-topbar{
+  display:flex;align-items:center;gap:14px;padding:8px 10px;
+  background:rgba(255,255,255,.02);border-bottom:1px solid var(--border);
+  flex-wrap:wrap;
+}
+.nse-spot-pill{
+  font-family:'Orbitron',monospace;font-size:14px;font-weight:900;
+  color:var(--cyan);letter-spacing:1px;
+}
+.nse-spot-chg{font-size:10px;margin-left:4px;}
+.nse-spot-chg.neg{color:var(--red);}
+.nse-spot-chg.pos{color:var(--green);}
+.nse-meta-pill{
+  font-size:8px;color:var(--text3);background:var(--bg3);
+  border:1px solid var(--border);border-radius:3px;padding:3px 8px;
+}
+.nse-meta-pill span{color:var(--text);font-weight:700;}
 
 /* ATM badge */
 .atm-badge{
@@ -326,13 +415,17 @@ header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;ba
   margin-left:5px;vertical-align:middle;letter-spacing:1px;
 }
 /* Recommended strike badge */
-.rec-star{
-  display:inline-block;font-size:8px;margin-left:4px;vertical-align:middle;
-}
-.rec-star.ce{color:var(--green);}
-.rec-star.pe{color:var(--red);}
+.rec-star{display:inline-block;font-size:8px;margin-left:4px;vertical-align:middle;}
+.rec-star.ce{color:var(--green);}.rec-star.pe{color:var(--red);}
 
-/* OI bar cell */
+/* LTP cell legacy compat */
+.ltp-c{font-size:11px;font-weight:700;}
+.ltp-c.ce{color:var(--text);text-align:right;}
+.ltp-c.pe{color:var(--text);text-align:left;}
+.ltp-c.is-atm{color:var(--cyan)!important;font-size:12px;}
+.ltp-c.is-rec{color:var(--yellow)!important;}
+
+/* OI bar legacy compat */
 .oibc{display:flex;align-items:center;gap:6px;}
 .oibc.r{justify-content:flex-end;}
 .oibc.l{justify-content:flex-start;}
@@ -345,13 +438,6 @@ header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;ba
 .oi-n.pe{color:var(--green);text-align:left;}
 .oi-d{font-size:7px;min-width:28px;}
 .oi-d.ce{text-align:right;}.oi-d.pe{text-align:left;}
-
-/* LTP cell */
-.ltp-c{font-size:11px;font-weight:700;}
-.ltp-c.ce{color:var(--text);text-align:right;}
-.ltp-c.pe{color:var(--text);text-align:left;}
-.ltp-c.is-atm{color:var(--cyan)!important;font-size:12px;}
-.ltp-c.is-rec{color:var(--yellow)!important;}
 
 /* ═══════════════════════════════════════════
    TRADE SETUP CARDS  — complete redesign
@@ -861,7 +947,7 @@ canvas.spark{display:block;width:100%;height:100%;}
 .sig-direction.bull{color:var(--green);text-shadow:0 0 30px rgba(0,240,124,.5);}
 .sig-direction.bear{color:var(--red);text-shadow:0 0 30px rgba(255,58,92,.5);}
 .sig-direction.wait{color:var(--text2);}
-.sig-sub{font-size:9px;color:var(--text2);letter-spacing:2px;margin-top:4px;}
+.sig-sub{font-size:9px;color:var(--text2);letter-spacing:.3px;margin-top:6px;line-height:1.7;}
 .sig-conf-row{display:flex;align-items:center;gap:8px;margin-top:10px;}
 .sig-conf-track{flex:1;height:4px;background:var(--bg3);border-radius:2px;overflow:hidden;}
 .sig-conf-fill{height:100%;border-radius:2px;transition:width .6s ease,background .3s;}
@@ -973,7 +1059,7 @@ canvas.spark{display:block;width:100%;height:100%;}
   <div class="ticker-lbl">⚡ MARKET IMPACT</div>
   <div class="ticker-track">
     <div class="ticker-scroll" id="tickerScroll">
-      <span class="ti"><span class="itxt">Connecting to QUANTRA BEAST v22 — Kite powered...</span></span>
+      <span class="ti"><span class="itxt">Connecting to QUANTRA BEAST v24 — Kite powered...</span></span>
     </div>
   </div>
 </div>
@@ -1668,40 +1754,63 @@ canvas.spark{display:block;width:100%;height:100%;}
       </div>
     </div>
 
-    <!-- LEGACY OI CHAIN (hidden by default, toggle available) -->
-    <div class="card" id="oiChainCard" style="display:none">
-      <div class="ch" id="oiTitle"><div class="dot"></div>OPTIONS CHAIN (FULL TABLE)
+    <!-- NSE-STYLE OPTION CHAIN — v24 -->
+    <div class="card" id="oiChainCard" style="display:none;padding:0;overflow:hidden">
+      <!-- Top bar: Spot + Expiry + IVP like NSE -->
+      <div class="nse-chain-topbar" id="oiTopBar">
+        <div>
+          <span class="nse-spot-pill" id="nseSpotVal">—</span>
+          <span class="nse-spot-chg neg" id="nseSpotChg"></span>
+        </div>
+        <div class="nse-meta-pill">Expiry <span id="nseExpiryVal">—</span></div>
+        <div class="nse-meta-pill">ATM <span id="nseAtmVal" style="color:var(--cyan)">—</span></div>
+        <div class="nse-meta-pill">PCR <span id="nsePcrVal">—</span></div>
+        <div class="nse-meta-pill">Max Pain <span id="nseMpVal" style="color:var(--purple)">—</span></div>
+        <div class="nse-meta-pill">IVP <span id="nseIvpVal">—</span></div>
         <span style="margin-left:auto;font-size:7px;color:var(--cyan);cursor:pointer" onclick="toggleOiView()">↩ HEATMAP</span>
       </div>
-      <div class="cb" style="padding:5px">
-        <div class="oi-expiry-banner" id="oiBanner"></div>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+
+      <!-- Expiry tabs -->
+      <div style="padding:6px 8px 4px;border-bottom:1px solid var(--border);background:rgba(255,255,255,.01)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
           <div class="exp-tab-label">EXPIRY — <span id="oiSegLabel" style="color:var(--cyan)">NIFTY</span></div>
           <div style="font-size:7px;color:var(--text3)" id="oiExpiryCount"></div>
         </div>
         <div class="exp-tabs" id="expiryTabs"></div>
-        <div class="oi-wrap">
-          <div class="oi-legend">
-            <span><span class="sq" style="background:var(--red)"></span>CE OI — high = resistance</span>
-            <span><span class="sq" style="background:var(--green)"></span>PE OI — high = support</span>
-            <span><span class="sq" style="background:var(--yellow)"></span>★ = recommended strike</span>
-          </div>
-          <table class="oit">
-            <thead>
-              <tr>
-                <th class="ce-grp" colspan="3">◀ CALLS (CE) — writing = resistance</th>
-                <th class="str-grp">STRIKE</th>
-                <th class="pe-grp" colspan="3">PUTS (PE) — writing = support ▶</th>
-              </tr>
-              <tr>
-                <th class="ce-col">OI</th><th class="ce-col">Δ OI</th><th class="ce-col">LTP ₹</th>
-                <th class="str-col"></th>
-                <th class="pe-col">LTP ₹</th><th class="pe-col">Δ OI</th><th class="pe-col">OI</th>
-              </tr>
-            </thead>
-            <tbody id="oiBody"></tbody>
-          </table>
-        </div>
+      </div>
+
+      <!-- Legend row -->
+      <div style="display:flex;gap:12px;padding:5px 10px;background:rgba(255,255,255,.01);border-bottom:1px solid var(--border);flex-wrap:wrap">
+        <span style="font-size:7px;color:#e05555">■ CALLS — high OI = resistance</span>
+        <span style="font-size:7px;color:#3dbd72">■ PUTS — high OI = support</span>
+        <span style="font-size:7px;color:var(--yellow)">★ = recommended strike</span>
+        <span style="font-size:7px;color:#60c8ff">ATM = at-the-money</span>
+      </div>
+
+      <!-- Table -->
+      <div class="oi-wrap" style="overflow-x:auto">
+        <table class="oit" id="nseOiTable">
+          <thead>
+            <tr>
+              <th class="ce-grp" colspan="4">CALLS</th>
+              <th class="str-grp" colspan="2">—</th>
+              <th class="pe-grp" colspan="4">PUTS</th>
+            </tr>
+            <tr class="subhdr">
+              <th class="ce-col" style="width:44px">OI Chg%</th>
+              <th class="ce-col" style="width:46px">OI-lakh</th>
+              <th class="ce-col" style="width:66px">Call OI ▬</th>
+              <th class="ce-col" style="width:58px">LTP</th>
+              <th class="str-col" style="width:68px">Strike ↕</th>
+              <th class="str-col" style="width:36px">IV</th>
+              <th class="pe-col" style="width:58px">LTP</th>
+              <th class="pe-col" style="width:66px">Put OI ▬</th>
+              <th class="pe-col" style="width:46px">OI-lakh</th>
+              <th class="pe-col" style="width:44px">OI Chg%</th>
+            </tr>
+          </thead>
+          <tbody id="oiBody"></tbody>
+        </table>
       </div>
     </div>
     <!-- HEATMAP TOGGLE BUTTON -->
@@ -3486,8 +3595,10 @@ function renderSignal(data){
   if(sigMain) sigMain.className = `sig-main ${cls}`;
   const sigA = document.getElementById('sigA');
   if(sigA) { sigA.textContent = s.action; sigA.className = `sig-direction ${cls}`; }
+
+  // ── v23: Rich prediction sentence — replaces static signal_sub ──────────
   const sigS = document.getElementById('sigS');
-  if(sigS) sigS.textContent = s.signal_sub || '';
+  if(sigS) sigS.innerHTML = _buildPredictionSentence(s, p, data.option_meta||{});
   
   // Confidence fill (v15 uses sig-conf-fill)
   const cf = document.getElementById('cfill');
@@ -3932,6 +4043,129 @@ function _buildStraddleRecommendation(s, p, meta, vix, pcr, absComp) {
     </div>
 
   </div>`;
+}
+
+// ══ v23: PREDICTION SENTENCE ENGINE ══════════════════════════════════════
+// Builds the "what the system expects next" sentence shown on the signal card.
+// Uses all 8 engine scores + option chain data to construct a specific,
+// confident prediction in plain English — like a trader talking to a trader.
+function _buildPredictionSentence(s, p, meta) {
+  const cls       = s.signal_cls || 'wait';
+  const conf      = s.confidence || 0;
+  const composite = s.composite  || 0;
+  const eng       = s.engines    || {};
+  const spot      = meta?.spot   || p?.spot || 0;
+  const pcr       = meta?.pcr    || 0;
+  const vix       = meta?.vix    || 0;
+  const mp        = meta?.max_pain || 0;
+  const atm       = meta?.atm_strike || (spot ? Math.round(spot/50)*50 : 0);
+  const ceStrike  = p?.ce_strike || atm;
+  const peStrike  = p?.pe_strike || atm;
+  const expiry    = p?.expiry    || meta?.expiry || '';
+
+  const trendSc   = eng.trend?.score     || 0;
+  const optSc     = eng.options?.score   || 0;
+  const gammaSc   = eng.gamma?.score     || 0;
+  const regimeSc  = eng.regime?.score    || 0;
+  const flowSc    = eng.flow?.score      || 0;
+  const sentSc    = eng.sentiment?.score || 0;
+  const newsSc    = eng.news?.score      || 0;
+  const volSc     = eng.volatility?.score|| 0;
+
+  const isBull    = cls === 'bull';
+  const isBear    = cls === 'bear';
+  const isWait    = cls === 'wait';
+  const absComp   = Math.abs(composite);
+
+  // ── 1. WHAT is the prediction (the core call) ─────────────────────────
+  let corePrediction = '';
+  if(isBull) {
+    const strike = ceStrike || atm;
+    const strongWord = conf >= 75 ? 'strongly' : conf >= 55 ? 'likely' : 'possibly';
+    corePrediction = `<span style="color:var(--green);font-weight:700">Nifty is ${strongWord} heading UP</span> — market expected to rise toward <span style="color:var(--cyan);font-weight:700">${strike} CE</span>${expiry ? ` (${expiry})` : ''}.`;
+  } else if(isBear) {
+    const strike = peStrike || atm;
+    const strongWord = conf >= 75 ? 'strongly' : conf >= 55 ? 'likely' : 'possibly';
+    corePrediction = `<span style="color:var(--red);font-weight:700">Nifty is ${strongWord} heading DOWN</span> — market expected to fall toward <span style="color:var(--cyan);font-weight:700">${strike} PE</span>${expiry ? ` (${expiry})` : ''}.`;
+  } else {
+    corePrediction = `<span style="color:var(--yellow);font-weight:700">Market direction is unclear</span> — engines are split, no strong move expected yet.`;
+  }
+
+  // ── 2. WHY in 2-3 key facts (most influential engines) ───────────────
+  const whyParts = [];
+
+  // Trend engine — chart analysis
+  if(Math.abs(trendSc) >= 15) {
+    if(trendSc > 0) whyParts.push(`price is above key moving averages (chart bullish)`);
+    else            whyParts.push(`price is below moving averages (chart bearish)`);
+  }
+
+  // Options/OI engine
+  if(Math.abs(optSc) >= 15) {
+    if(pcr > 1.3)      whyParts.push(`PCR ${pcr.toFixed(2)} — big players writing puts (bullish OI)`);
+    else if(pcr < 0.8) whyParts.push(`PCR ${pcr.toFixed(2)} — heavy call writing (bearish OI pressure)`);
+    else if(optSc > 0) whyParts.push(`open interest buildup favouring calls`);
+    else               whyParts.push(`open interest buildup favouring puts`);
+  }
+
+  // Gamma
+  if(Math.abs(gammaSc) >= 10) {
+    if(gammaSc > 0) whyParts.push(`positive gamma near ATM — moves get amplified upward`);
+    else            whyParts.push(`negative gamma — market makers likely selling into strength`);
+  }
+
+  // Max pain
+  if(mp && spot) {
+    const diff = spot - mp;
+    if(Math.abs(diff) > 80) {
+      if(diff > 0) whyParts.push(`spot ${Math.round(diff)}pts above max pain ${mp} — gravity pull DOWN`);
+      else         whyParts.push(`spot ${Math.round(Math.abs(diff))}pts below max pain ${mp} — gravity pull UP`);
+    }
+  }
+
+  // VIX
+  if(vix > 0) {
+    if(vix < 12)      whyParts.push(`VIX ${vix.toFixed(1)} is very low — options very cheap, good time to buy`);
+    else if(vix < 16) whyParts.push(`VIX ${vix.toFixed(1)} is calm — normal premium environment`);
+    else if(vix > 20) whyParts.push(`VIX ${vix.toFixed(1)} is elevated — options expensive, size down`);
+  }
+
+  // FII/Flow
+  if(Math.abs(flowSc) >= 15) {
+    if(flowSc > 0) whyParts.push(`FII buying today (smart money bullish)`);
+    else           whyParts.push(`FII selling today (smart money bearish)`);
+  }
+
+  // News engine
+  if(Math.abs(newsSc) >= 10) {
+    if(newsSc > 0) whyParts.push(`news flow is positive`);
+    else           whyParts.push(`news flow is negative`);
+  }
+
+  // ── 3. HOW STRONG is the conviction ──────────────────────────────────
+  let convictionLine = '';
+  if(!isWait) {
+    const bullC = s.bull_count || 0;
+    const bearC = s.bear_count || 0;
+    const total = Object.keys(eng).length || 8;
+    const dominant = isBull ? bullC : bearC;
+    const dominantWord = dominant >= 7 ? 'All' : dominant >= 6 ? '6 of 8' : dominant >= 5 ? '5 of 8' : `${dominant} of ${total}`;
+    const confColor = conf >= 75 ? 'var(--green)' : conf >= 55 ? 'var(--yellow)' : 'var(--red)';
+    convictionLine = `<span style="color:${confColor}">${dominantWord} engines agree</span> · <span style="color:${confColor}">confidence ${conf}%</span>`;
+  }
+
+  // ── 4. Assemble ───────────────────────────────────────────────────────
+  let whyLine = '';
+  if(whyParts.length > 0) {
+    // Take top 2-3 most relevant
+    const shown = whyParts.slice(0, 3);
+    whyLine = `<div style="font-size:8px;color:var(--text3);margin-top:4px;line-height:1.6">Because: ${shown.join(' · ')}</div>`;
+  }
+  const convLine = convictionLine
+    ? `<div style="font-size:7.5px;color:var(--text3);margin-top:3px">${convictionLine}</div>`
+    : '';
+
+  return `<div style="font-size:9px;line-height:1.6">${corePrediction}</div>${whyLine}${convLine}`;
 }
 
 // Build correct Zerodha symbol: NIFTY25MAR1324500CE
@@ -4493,10 +4727,14 @@ function _buildReasonSummary(s, meta) {
   const vix = meta?.vix || 0;
 
   if(cls === 'wait') {
+    const bullC = s.bull_count || 0;
+    const bearC = s.bear_count || 0;
+    const total = Object.keys(s.engines||{}).length || 8;
     return `<div style="padding:6px 8px;background:var(--bg3);border-radius:3px;border-left:3px solid var(--yellow);margin-bottom:8px;font-size:8px;color:var(--text2);line-height:1.7">
-      ⏸ <strong>No clear signal right now.</strong> The market is moving sideways or sending mixed signals.
-      ${pcr>0?` PCR is ${pcr.toFixed(2)} (${pcr>1.2?'bullish':pcr<0.8?'bearish':'neutral'}).`:''}
-      Wait for a clearer direction before entering any trade.
+      ⚖️ <strong>${bullC} engines say UP · ${bearC} engines say DOWN</strong> — no dominant direction.
+      ${pcr>0?` PCR ${pcr.toFixed(2)} (${pcr>1.2?'bullish OI':pcr<0.8?'bearish OI':'neutral OI'}).`:''} 
+      ${vix>0?` VIX ${vix.toFixed(1)} — premiums ${vix<14?'cheap (good for straddle)':vix>20?'expensive (avoid straddle today)':'at normal levels'}.`:''}
+      See the <strong style="color:var(--yellow)">⚖️ Straddle Recommendation</strong> in the Trade Command section below.
     </div>`;
   }
 
@@ -4523,6 +4761,187 @@ let _oiFullChain = [], _oiMeta = {}, _oiSelectedExpiry = '';
 function renderOI(chain, meta) {
   _oiFullChain = chain;
   _oiMeta      = meta;
+
+  const sym  = meta.symbol || _selectedSegment || 'NIFTY';
+  const _sc3  = (typeof SEGMENT_CONFIG!=='undefined' && SEGMENT_CONFIG[sym]) || null;
+  const step  = _sc3 ? _sc3.step : (sym==='BANKNIFTY'?100:50);
+  const spot  = meta.spot || 0;
+  const atm   = meta.atm_strike || Math.round(spot / step) * step;
+  const pcr   = (meta.pcr  || 0).toFixed(2);
+  const mp    = meta.max_pain || 0;
+
+  // ── Update top bar ────────────────────────────────────────────────────
+  const spotEl = document.getElementById('nseSpotVal');
+  const chgEl  = document.getElementById('nseSpotChg');
+  if(spotEl) spotEl.textContent = spot ? Math.round(spot).toLocaleString('en-IN') : '—';
+  if(chgEl && meta.spot_change !== undefined) {
+    const chg = meta.spot_change || 0;
+    const pct = meta.spot_change_pct || 0;
+    chgEl.textContent = `${chg >= 0 ? '+' : ''}${chg.toFixed(2)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`;
+    chgEl.className = `nse-spot-chg ${chg >= 0 ? 'pos' : 'neg'}`;
+  }
+  const nseExp = document.getElementById('nseExpiryVal');
+  const nseAtm = document.getElementById('nseAtmVal');
+  const nsePcr = document.getElementById('nsePcrVal');
+  const nseMp  = document.getElementById('nseMpVal');
+  const nseIvp = document.getElementById('nseIvpVal');
+  const expiry = _oiSelectedExpiry || meta.expiry || '';
+  if(nseExp) nseExp.textContent = expiry || '—';
+  if(nseAtm) nseAtm.textContent = atm || '—';
+  if(nsePcr) {
+    nsePcr.textContent = pcr;
+    nsePcr.style.color = +pcr > 1.2 ? '#3dbd72' : +pcr < 0.8 ? '#e05555' : 'var(--yellow)';
+  }
+  if(nseMp) nseMp.textContent = mp ? mp.toLocaleString('en-IN') : '—';
+  if(nseIvp) {
+    const ivp = meta.ivp || meta.iv_percentile || '—';
+    nseIvp.textContent = ivp !== '—' ? Math.round(ivp) : '—';
+    if(nseIvp.parentElement) nseIvp.style.color = +ivp > 80 ? '#e05555' : +ivp < 20 ? '#3dbd72' : 'var(--yellow)';
+  }
+
+  // ── Build expiry tabs ─────────────────────────────────────────────────
+  const tabsEl = document.getElementById('expiryTabs');
+  if (tabsEl) {
+    const chainExpiries = [...new Set(chain.map(c => c.expiry).filter(Boolean))];
+    const metaExpiries  = meta.all_expiries || [];
+    let allExp = metaExpiries.length ? metaExpiries : chainExpiries;
+    if (!allExp.length && meta.expiry) allExp = [meta.expiry];
+    if (allExp.length) _allExpiries[sym] = allExp;
+
+    if (!_oiSelectedExpiry || !allExp.includes(_oiSelectedExpiry))
+      _oiSelectedExpiry = _selectedExpiry || meta.expiry || allExp[0] || '';
+
+    const dd = document.getElementById('expiryDropdown');
+    if (dd && dd.value !== _oiSelectedExpiry) buildExpiryDropdown(sym);
+
+    const countEl = document.getElementById('oiExpiryCount');
+    if (countEl) countEl.textContent = `${allExp.length} expiries`;
+
+    const oiSegEl = document.getElementById('oiSegLabel');
+    if (oiSegEl && _sc3) { oiSegEl.textContent = _sc3.label; oiSegEl.style.color = _sc3.color; }
+
+    function classifyExpiry(exp, idx, total) {
+      try {
+        const p = exp.split('-');
+        if (p.length !== 3) return { label: exp, type: idx===0?'weekly':'mid', badge: '', cls: '' };
+        const d = new Date(`${p[2]}-${p[1]}-${p[0]}`);
+        const nm  = new Date(d); nm.setDate(d.getDate() + 7);
+        const isLastInMonth = nm.getMonth() !== d.getMonth();
+        const hasWeekly = _sc3 ? _sc3.hasWeekly : true;
+        if (!hasWeekly && idx === 0) return { label: 'NEAR MONTH', type: 'monthly', badge: 'NEAR', cls: 'monthly' };
+        if (!hasWeekly && idx === total-1) return { label: 'FAR MONTH', type: 'monthly', badge: 'FAR', cls: 'monthly' };
+        if (!hasWeekly) return { label: 'MONTH', type: 'monthly', badge: '', cls: 'monthly' };
+        if (idx === 0) return { label: 'CURRENT', type: 'weekly', badge: 'CUR', cls: 'weekly' };
+        if (isLastInMonth) return { label: 'MONTHLY', type: 'monthly', badge: 'MON', cls: 'monthly' };
+        return { label: '', type: 'weekly', badge: '', cls: '' };
+      } catch(e) { return { label: exp, type: 'mid', badge: '', cls: '' }; }
+    }
+
+    tabsEl.innerHTML = allExp.slice(0, 8).map((exp, i) => {
+      const isActive = exp === _oiSelectedExpiry;
+      const info = classifyExpiry(exp, i, allExp.length);
+      return `<div class="exp-tab ${info.cls} ${isActive?'active':''}" onclick="selectExpiry('${exp}')" title="${info.label || exp}">
+        ${exp}${info.badge?`<span style="font-size:5px;opacity:.7;margin-left:3px">${info.badge}</span>`:''}
+      </div>`;
+    }).join('');
+  }
+
+  // ── Filter chain by expiry ────────────────────────────────────────────
+  const expFilter = _oiSelectedExpiry || meta.expiry || '';
+  const expFiltered = expFilter
+    ? chain.filter(c => !c.expiry || c.expiry === expFilter)
+    : chain;
+
+  const body = document.getElementById('oiBody');
+  body.innerHTML = '';
+  if (!expFiltered.length) {
+    body.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:14px;color:var(--text3);font-size:9px">No chain data — generate signal first</td></tr>`;
+    return;
+  }
+
+  // Show ATM ±5 strikes
+  const near = expFiltered
+    .filter(c => Math.abs(c.strike - atm) <= 6 * step)
+    .sort((a, b) => a.strike - b.strike);
+  if (!near.length) return;
+
+  const maxCE = Math.max(...near.map(c => c.ce_oi || 0), 1);
+  const maxPE = Math.max(...near.map(c => c.pe_oi || 0), 1);
+  const recCE = lastPos && lastPos.ce_strike;
+  const recPE = lastPos && lastPos.pe_strike;
+
+  near.forEach(c => {
+    const isATM   = c.strike === atm;
+    const isITMce = c.strike < atm;   // in-the-money for CE (below spot)
+    const isITMpe = c.strike > atm;   // in-the-money for PE (above spot)
+    const isRecCE = recCE && c.strike === recCE;
+    const isRecPE = recPE && c.strike === recPE;
+
+    // ── CE side ──────────────────────────────────────────────────────────
+    const ceOiRaw  = c.ce_oi || 0;
+    const ceOiLk   = (ceOiRaw / 100000).toFixed(1);           // lakhs
+    const ceBarPct = Math.round(ceOiRaw / maxCE * 100);
+    const ceChgPct = c.ce_oi_chg_pct != null ? Math.round(c.ce_oi_chg_pct)
+                   : c.ce_oi_change && ceOiRaw > 0 ? Math.round(c.ce_oi_change / (ceOiRaw - c.ce_oi_change) * 100)
+                   : null;
+    const ceChgCls = ceChgPct == null ? 'neu' : ceChgPct > 0 ? 'pos' : ceChgPct < 0 ? 'neg' : 'neu';
+    const ceChgStr = ceChgPct != null ? ceChgPct + '%' : '—';
+    const ceLtp    = c.ce_ltp != null ? (+c.ce_ltp).toFixed(2) : '—';
+
+    // ── PE side ──────────────────────────────────────────────────────────
+    const peOiRaw  = c.pe_oi || 0;
+    const peOiLk   = (peOiRaw / 100000).toFixed(1);
+    const peBarPct = Math.round(peOiRaw / maxPE * 100);
+    const peChgPct = c.pe_oi_chg_pct != null ? Math.round(c.pe_oi_chg_pct)
+                   : c.pe_oi_change && peOiRaw > 0 ? Math.round(c.pe_oi_change / (peOiRaw - c.pe_oi_change) * 100)
+                   : null;
+    const peChgCls = peChgPct == null ? 'neu' : peChgPct > 0 ? 'pos' : peChgPct < 0 ? 'neg' : 'neu';
+    const peChgStr = peChgPct != null ? peChgPct + '%' : '—';
+    const peLtp    = c.pe_ltp != null ? (+c.pe_ltp).toFixed(2) : '—';
+
+    // ── IV ────────────────────────────────────────────────────────────────
+    const iv = c.iv != null ? (+c.iv).toFixed(1) : (c.ce_iv || c.pe_iv || '—');
+
+    // ── Strike badges ─────────────────────────────────────────────────────
+    const atmBadge = isATM ? '<span class="nse-atm-badge">ATM</span>' : '';
+    const recBadge = isRecCE ? '<span class="nse-rec-badge ce">★CE</span>'
+                   : isRecPE ? '<span class="nse-rec-badge pe">★PE</span>' : '';
+
+    // ── LTP classes ───────────────────────────────────────────────────────
+    const ceLtpCls = `nse-ltp${isATM?' atm':''}${isRecCE?' rec':''}`;
+    const peLtpCls = `nse-ltp${isATM?' atm':''}${isRecPE?' rec':''}`;
+
+    const tr = document.createElement('tr');
+    if      (isATM)   tr.className = 'atm';
+    else if (isITMce) tr.className = 'itm-ce';
+    else if (isITMpe) tr.className = 'itm-pe';
+
+    tr.innerHTML = `
+      <td class="ce-col"><span class="oichg ${ceChgCls}">${ceChgStr}</span></td>
+      <td class="ce-col"><span class="oilk ce">${ceOiLk}</span></td>
+      <td class="ce-col">
+        <div class="oibar-wrap r">
+          <div class="nse-bar-bg ce" style="width:64px;height:9px;border-radius:2px;overflow:hidden;background:rgba(255,255,255,.04)">
+            <div class="nse-bar ce" style="width:${ceBarPct}%;height:9px;border-radius:2px;background:rgba(200,60,60,.7);float:right"></div>
+          </div>
+        </div>
+      </td>
+      <td class="ce-col"><span class="${ceLtpCls}">${ceLtp}</span></td>
+      <td class="str-col"><span class="nse-strike">${c.strike}${atmBadge}${recBadge}</span></td>
+      <td class="str-col"><span class="nse-iv">${iv}</span></td>
+      <td class="pe-col"><span class="${peLtpCls}">${peLtp}</span></td>
+      <td class="pe-col">
+        <div class="oibar-wrap l">
+          <div class="nse-bar-bg pe" style="width:64px;height:9px;border-radius:2px;overflow:hidden;background:rgba(255,255,255,.04)">
+            <div class="nse-bar pe" style="width:${peBarPct}%;height:9px;border-radius:2px;background:rgba(40,180,80,.7)"></div>
+          </div>
+        </div>
+      </td>
+      <td class="pe-col"><span class="oilk pe">${peOiLk}</span></td>
+      <td class="pe-col"><span class="oichg ${peChgCls}">${peChgStr}</span></td>`;
+    body.appendChild(tr);
+  });
+}
 
   const sym  = meta.symbol || _selectedSegment || 'NIFTY';
   // Use SEGMENT_CONFIG for correct step size
@@ -4597,122 +5016,6 @@ function renderOI(chain, meta) {
       </div>`;
     }).join('');
   }
-
-  // Use selected expiry for display, fall back to meta.expiry
-  const expiry = _oiSelectedExpiry || meta.expiry || '';
-
-  // ── header title ──────────────────────────────────────────────────────
-  const oiTitle = document.getElementById('oiTitle');
-  if (oiTitle) {
-    const symColour = sym==='BANKNIFTY'?'var(--kite)':sym==='FINNIFTY'?'var(--yellow)':'var(--cyan)';
-    oiTitle.innerHTML =
-      `<div class="dot"></div>OPTIONS CHAIN — <span style="color:${symColour}">${sym}</span>` +
-      (expiry ? ` <span style="color:var(--yellow);font-weight:700;margin-left:6px">▸ ${expiry}</span>` : '') +
-      ` <span style="color:var(--cyan);margin-left:10px">ATM ${atm}</span>` +
-      ` <span style="color:var(--text2);margin-left:8px">PCR ${pcr}</span>`;
-  }
-
-  // ── expiry info banner ──────────────────────────────────────────────────
-  const banner = document.getElementById('oiBanner');
-  if (banner) {
-    const spotStr = spot ? Math.round(spot).toLocaleString('en-IN') : '—';
-    const mpStr   = mp   ? mp.toLocaleString('en-IN')               : '—';
-    const allExp2 = meta.all_expiries || [];
-    const isNearest = expiry === allExp2[0] || expiry === meta.expiry;
-    banner.innerHTML = `
-      <div class="oeb-left">
-        <div class="oeb-label">VIEWING EXPIRY</div>
-        <div class="oeb-expiry">${expiry || '—'}</div>
-        <div style="font-size:7px;color:var(--text3);margin-top:2px">${isNearest?'✅ NEAREST (use this for trading)':'⚠ Not nearest expiry — not for active positions'}</div>
-      </div>
-      <div class="oeb-right">
-        <div class="oeb-stat"><div class="sv" style="color:var(--cyan)">${spotStr}</div><div class="sl">SPOT</div></div>
-        <div class="oeb-stat"><div class="sv" style="color:var(--cyan)">${atm}</div><div class="sl">ATM</div></div>
-        <div class="oeb-stat"><div class="sv" style="color:${+pcr>1.2?'var(--green)':+pcr<0.8?'var(--red)':'var(--yellow)'}">${pcr}</div><div class="sl">PCR</div></div>
-        <div class="oeb-stat"><div class="sv" style="color:var(--purple)">${mpStr}</div><div class="sl">MAX PAIN</div></div>
-      </div>`;
-  }
-
-  // Filter by selected expiry first
-  const expFiltered = expiry
-    ? chain.filter(c => !c.expiry || c.expiry === expiry)
-    : chain;
-
-  const body = document.getElementById('oiBody');
-  body.innerHTML = '';
-  if (!expFiltered.length) {
-    body.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:12px;color:var(--text3);font-size:8px">No chain data — generate signal first</td></tr>';
-    return;
-  }
-
-  const near = expFiltered
-    .filter(c => Math.abs(c.strike - atm) <= 5 * step)
-    .sort((a, b) => a.strike - b.strike);
-  if (!near.length) return;
-
-  const maxCE = Math.max(...near.map(c => c.ce_oi || 0), 1);
-  const maxPE = Math.max(...near.map(c => c.pe_oi || 0), 1);
-  const recCE = lastPos && lastPos.ce_strike;
-  const recPE = lastPos && lastPos.pe_strike;
-
-  near.forEach(c => {
-    const isATM   = c.strike === atm;
-    const isITMce = c.strike < atm;
-    const isITMpe = c.strike > atm;
-    const isRecCE = recCE && c.strike === recCE;
-    const isRecPE = recPE && c.strike === recPE;
-
-    const cePct  = Math.round((c.ce_oi||0)/maxCE*100);
-    const pePct  = Math.round((c.pe_oi||0)/maxPE*100);
-    const ceOI   = ((c.ce_oi||0)/1000).toFixed(1)+'K';
-    const peOI   = ((c.pe_oi||0)/1000).toFixed(1)+'K';
-    const ceChg  = c.ce_oi_change||0, peChg = c.pe_oi_change||0;
-    const ceDstr = (ceChg>=0?'+':'')+((ceChg/1000).toFixed(1))+'K';
-    const peDstr = (peChg>=0?'+':'')+((peChg/1000).toFixed(1))+'K';
-    const ceDcol = ceChg>0?'var(--red)':ceChg<0?'var(--green)':'var(--text3)';
-    const peDcol = peChg>0?'var(--green)':peChg<0?'var(--red)':'var(--text3)';
-    const ceLtp  = c.ce_ltp ? '₹'+(+c.ce_ltp).toFixed(1) : '—';
-    const peLtp  = c.pe_ltp ? '₹'+(+c.pe_ltp).toFixed(1) : '—';
-    const isWS   = c.ce_source==='kite'||c.ce_src==='kite';
-
-    // Strike cell decorations
-    const atmBadge  = isATM  ? '<span class="atm-badge">ATM</span>' : '';
-    const recCEstar = isRecCE ? '<span class="rec-star ce" title="Recommended CE strike">★</span>' : '';
-    const recPEstar = isRecPE ? '<span class="rec-star pe" title="Recommended PE strike">★</span>' : '';
-
-    // LTP classes
-    const ceLtpCls = `ltp-c ce${isATM?' is-atm':''}${isRecCE?' is-rec':''}`;
-    const peLtpCls = `ltp-c pe${isATM?' is-atm':''}${isRecPE?' is-rec':''}`;
-
-    const tr = document.createElement('tr');
-    if      (isATM)   tr.className = 'atm';
-    else if (isITMce) tr.className = 'itm-ce';
-    else if (isITMpe) tr.className = 'itm-pe';
-
-    tr.innerHTML = `
-      <td class="ce-col">
-        <div class="oibc r">
-          <span class="oi-n ce">${ceOI}</span>
-          <div class="oi-bar"><div class="oi-bar-f ce" style="width:${cePct}%"></div></div>
-        </div>
-      </td>
-      <td class="ce-col"><span class="oi-d ce" style="color:${ceDcol}">${ceDstr}</span></td>
-      <td class="ce-col">
-        <span class="${ceLtpCls}">${ceLtp}</span>
-        ${isWS?'<span style="font-size:6px;color:var(--cyan);margin-left:2px">WS</span>':''}
-      </td>
-      <td class="str-col">${c.strike}${atmBadge}${recCEstar}${recPEstar}</td>
-      <td class="pe-col"><span class="${peLtpCls}">${peLtp}</span></td>
-      <td class="pe-col"><span class="oi-d pe" style="color:${peDcol}">${peDstr}</span></td>
-      <td class="pe-col">
-        <div class="oibc l">
-          <div class="oi-bar"><div class="oi-bar-f pe" style="width:${pePct}%"></div></div>
-          <span class="oi-n pe">${peOI}</span>
-        </div>
-      </td>`;
-    body.appendChild(tr);
-  });
-}
 
 // Expiry tab click handler
 function selectExpiry(exp) {
